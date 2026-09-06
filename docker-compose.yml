@@ -4,9 +4,9 @@ services:
     container_name: mezzala_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: mezzala
-      POSTGRES_PASSWORD: mezzala_2345
-      POSTGRES_DB: mezzala_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASS}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:

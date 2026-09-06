@@ -5,6 +5,9 @@ class Settings(BaseSettings):
     bzzorio_base_url: str
     db_url: str
     redis_url: str
-    model_config = SettingsConfigDict(env_file=".env.local")
+    model_config = SettingsConfigDict(env_file=".env")
+    postgres_user: str
+    postgres_pass: str
+    postgres_db: str
 
 settings = Settings()
