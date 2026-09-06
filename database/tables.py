@@ -27,7 +27,7 @@ class Fixture(Base):
 class News(Base):
     __tablename__ = "news"
     
-    id: Mapped[int] = mapped_column(primary_key=True, increment=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String)
     link: Mapped[str] = mapped_column(String)
     date: Mapped[datetime] = mapped_column(DateTime)

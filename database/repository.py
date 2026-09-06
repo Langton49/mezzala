@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from tables import Fixture, News, Teams
+from .tables import Fixture, News, Team
 
 async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
     statement = insert(Fixture).values(**fixture_data)
