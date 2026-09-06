@@ -1,10 +1,11 @@
-import requests
+import httpx
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture, LiveFixture
-from database.repository import upsert_fixture
+from database.repository import upsert_fixture, upsert_live_fixture, orm_to_dict
 from database.database import async_session
 from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 
 """
@@ -17,6 +18,12 @@ X) Normalize to match the expected data structure with proper labels
 5.) Publish to Redis for websocket updates
 6.) Do this every 15s for live data
 """
+client = httpx.AsyncClient(
+    base_url=settings.bzzorio_base_url,
+    headers={"Authorization": f"Token {settings.bzzorio_api_key}"},
+    timeout=10.0    
+)
+
 def transform_fixture(dictionary: dict) -> dict:
     return {
         "match_id": dictionary["id"],
@@ -57,28 +64,16 @@ async def fetch_live_fixtures(league_id: int) -> list[LiveFixture]:
     Returns:
         list[LiveFixture]: List of LiveFixture objects
     """
+    if not league_id:
+        return []
     try:
-        live_requests = requests.get(f"{settings.bzzorio_base_url}events/live/?league_id={league_id}", headers={
-            "Authorization": f"Token {settings.bzzorio_api_key}"
-        })
-        
+        live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
-        live_fixtures = []
-        for lvfx in live_response:
-            live_fixtures.append(LiveFixture(**transform_live_fixture(lvfx)))
-        return live_fixtures
-        
-    except requests.exceptions.Timeout:
-        print("Request timed out")
-
-    except requests.exceptions.ConnectionError:
-        print("Could not connect to the API")
-
-    except requests.exceptions.HTTPError as e:
+        return [LiveFixture(**transform_live_fixture(fx)) for fx in live_response]
+    except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Request failed: {e}")
 
 async def fetch_league_fixtures(league_id: int) -> list[Fixture]:
@@ -91,27 +86,13 @@ async def fetch_league_fixtures(league_id: int) -> list[Fixture]:
         list[Fixture]: A list of the Fixture object for each response fixture from the API
     """
     try:
-        fixture_request = requests.get(f"{settings.bzzorio_base_url}events/?league_id={league_id}&status=upcoming&date_from={datetime.now().strftime("%Y-%m-%d")}&limit=10", headers={
-            "Authorization": f"Token {settings.bzzorio_api_key}"
-        })
-        
+        fixture_request = client.get(f"events/", params={"league_id": league_id, "status": "upcoming", "date_from": f"{datetime.now().strftime("%Y-%m-%d")}", "limit": 10})
         fixture_request.raise_for_status()
         league_fixtures = fixture_request.json()["results"]
-        model_fixtures = []
-        for fx in league_fixtures:
-            fixture = Fixture(**transform_fixture(fx))
-            model_fixtures.append(fixture)
-        return model_fixtures
-    except requests.exceptions.Timeout:
-        print("Request timed out")
-
-    except requests.exceptions.ConnectionError:
-        print("Could not connect to the API")
-
-    except requests.exceptions.HTTPError as e:
+        return [Fixture(**transform_fixture(fx)) for fx in league_fixtures]
+    except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Request failed: {e}")
         
 async def fetch_fixture(match_id: int) -> Fixture:
@@ -124,23 +105,13 @@ async def fetch_fixture(match_id: int) -> Fixture:
         Fixture: Fixture object for postgres table
     """
     try:
-        fixture_request = requests.get(f"{settings.bzzorio_base_url}events/{match_id}", headers={
-            "Authorization": f"Token {settings.bzzorio_api_key}"
-        })
-        
+        fixture_request = client.get(f"events/", params={"match_id": match_id})
         fixture_request.raise_for_status()
         fixture  = fixture_request.json()
         return Fixture(**transform_fixture(fixture))
-    except requests.exceptions.Timeout:
-        print("Request timed out")
-
-    except requests.exceptions.ConnectionError:
-        print("Could not connect to the API")
-
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Request failed: {e}")
     
 async def fetch_standings(league_id: int) -> list[dict]:
@@ -153,23 +124,13 @@ async def fetch_standings(league_id: int) -> list[dict]:
         list[dict]: List of each teams entry in the league table. Each dict contains team stats as well as position for the league table
     """
     try:
-        standings_request = requests.get(f"{settings.bzzorio_base_url}leagues/{league_id}/standings", headers={
-            "Authorization": f"Token {settings.bzzorio_api_key}"
-        })
+        standings_request = client.get(f"leagues/{league_id}/standings")
         standings_request.raise_for_status()
-        
         standings = standings_request.json()['standings']
         return standings
-    except requests.exceptions.Timeout:
-        print("Request timed out")
-
-    except requests.exceptions.ConnectionError:
-        print("Could not connect to the API")
-
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Request failed: {e}")
         
 async def fetch_stat(league_id: int, stat: str) -> list[dict]:
@@ -183,22 +144,38 @@ async def fetch_stat(league_id: int, stat: str) -> list[dict]:
         list[dict]: List of each players entry in the stat table along with the stats and position. The main stat (i.e. Goal, Assist) is represented by the value key
     """
     try:
-        stat_request = requests.get(f"{settings.bzzorio_base_url}leagues/{league_id}/top/{stat}", headers={
-            "Authorization": f"Token {settings.bzzorio_api_key}"
-        })
+        stat_request = client.get(f"leagues/{league_id}/top/{stat}")
         stat_request.raise_for_status()
         stats = stat_request.json()['leaders']
-        print(stats)
-    except requests.exceptions.Timeout:
-        print("Request timed out")
-
-    except requests.exceptions.ConnectionError:
-        print("Could not connect to the API")
-
-    except requests.exceptions.HTTPError as e:
+        return stats
+    except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Request failed: {e}")
 
-
+async def poll_live_fixtures():
+    for _, details in LEAGUES.items():
+        fixtures = await fetch_live_fixtures(details.get("bzzorio_id", None))
+        if not fixtures:
+            continue
+        for fx in fixtures:
+            print(f"{fx.home_team} {fx.home_score} - {fx.away_score} {fx.away_team}")
+            print(f"Time: {fx.current_minute}")
+            
+        async with async_session() as db:
+            for live_fx in fixtures:
+                await upsert_live_fixture(db, orm_to_dict(live_fx))
+                
+async def main():
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
+    scheduler.start()
+    
+    print(f"Poller running")
+    try:
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+        
+if __name__ == "__main__":
+    asyncio.run(main())

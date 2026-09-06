@@ -1,7 +1,19 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, News, Team
+from .tables import Fixture, News, Team, LiveFixture
+from sqlalchemy import inspect
+
+async def upsert_live_fixture(db: AsyncSession, fixture_data: dict) -> LiveFixture:
+        statement = insert(LiveFixture).values(**fixture_data)
+        statement = statement.on_conflict_do_update(
+            index_elements=['match_id'],
+            set_={col: val for col, val in fixture_data.items() if col != "match_id"}
+        )
+        await db.execute(statement)
+        await db.commit()
+        result = await db.execute(select(LiveFixture).where(LiveFixture.match_id == fixture_data['match_id']))
+        return result.scalar_one()
 
 async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
     statement = insert(Fixture).values(**fixture_data)
@@ -21,3 +33,6 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
 async def get_matches_by_league(db: AsyncSession, league_id: int) -> list[Fixture]:
     result = await db.execute(select(Fixture).where(Fixture.league_id == league_id))
     return result.scalars().all()
+
+def orm_to_dict(obj) -> dict:
+    return {col.key: getattr(obj, col.key) for col in inspect(obj).mapper.column_attrs}
