@@ -1,5 +1,6 @@
 import httpx
 import redis
+import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
@@ -165,18 +166,22 @@ async def poll_live_fixtures():
     async with asyncio.TaskGroup() as tg:
         requests = [tg.create_task(fetch_live_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
         
-    for response in requests:
-        league_fixtures = response.result()
-        if not league_fixtures:
-            continue
-        for fx in league_fixtures:
-            print(f"{fx.home_team} {fx.home_score} - {fx.away_score} {fx.away_team}")
-            print(f"Time: {fx.current_minute}")
-            print()
+    async with async_session() as db: 
+        for response in requests:
+            league_fixtures = response.result()
+            if isinstance(league_fixtures, Exception) or not league_fixtures:
+                continue
             
-        async with async_session() as db:
-            for live_fx in league_fixtures:
-                await upsert_fixture(db, orm_to_dict(live_fx))
+            for fx in league_fixtures:
+                print(f"{fx.home_team} {fx.home_score} - {fx.away_score} {fx.away_team}")
+                print(f"Time: {fx.current_minute}")
+                print("=" * 80)
+                await upsert_fixture(db, orm_to_dict(fx))
+                if matches_changed(fx.match_id, orm_to_dict(fx)):
+                    redis_client.publish(
+                        "match-updates",
+                        json.dumps(orm_to_dict(fx), default=str)
+                    )
                 
 async def main():
     scheduler = AsyncIOScheduler()
