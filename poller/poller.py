@@ -1,8 +1,9 @@
 import httpx
+import redis
 from config.settings import settings
 from config.leagues import LEAGUES
-from database.tables import Fixture, LiveFixture
-from database.repository import upsert_fixture, upsert_live_fixture, orm_to_dict
+from database.tables import Fixture
+from database.repository import upsert_fixture, orm_to_dict
 from database.database import async_session
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,56 +14,63 @@ Poller is the singleton service that fetches match info and news from external A
 The poller should do the following tasks:
 X) Fetch data from APIs and RSS feeds
 X) Normalize to match the expected data structure with proper labels
-3.) Compare against what exists so we know what's changed since last update
-4.) Upsert to postgres db
+3.) Compare against what exists so we know what's changed since last update. keeping the last seen in the pollers memory
+X) Upsert to postgres db
 5.) Publish to Redis for websocket updates
-6.) Do this every 15s for live data
 """
+redis_client = redis.Redis(
+    host="localhost",
+    port=6379,
+    decode_responses=True
+)
+
 client = httpx.AsyncClient(
     base_url=settings.bzzorio_base_url,
     headers={"Authorization": f"Token {settings.bzzorio_api_key}"},
     timeout=10.0    
 )
+LIVE_MATCHES_STORE: dict[int, tuple] = {}
+
+def matches_changed(match_id: int, fixture_data: dict) -> bool:
+    last_snapshot = (
+        fixture_data["status"],
+        fixture_data["home_score"],
+        fixture_data["away_score"],
+        fixture_data["current_minute"],
+    )
+    
+    if LIVE_MATCHES_STORE.get(match_id) == last_snapshot:
+        return False
+    LIVE_MATCHES_STORE[match_id] = last_snapshot
+    return True
 
 def transform_fixture(dictionary: dict) -> dict:
     return {
         "match_id": dictionary["id"],
         "league_id": dictionary["league_id"],
         "home_team_id": dictionary["home_team_id"],
-        "away_team_id": dictionary["away_team_id"],
         "home_team": dictionary["home_team"],
-        "away_team": dictionary["away_team"],
-        "venue_id": dictionary["venue_id"],
-        "home_score": dictionary["home_score"],
-        "away_score": dictionary["away_score"],
-        "event_date": dictionary["event_date"]
-    }
-    
-def transform_live_fixture(dictionary: dict) -> dict:
-    return {
-        "match_id": dictionary["id"],
-        "league_id": dictionary["league_id"],
-        "home_team_id": dictionary["home_team_id"],
         "away_team_id": dictionary["away_team_id"],
-        "home_team": dictionary["home_team"],
         "away_team": dictionary["away_team"],
-        "home_score": dictionary["home_score"],
-        "away_score": dictionary["away_score"],
-        "event_date": dictionary["event_date"],
-        "current_minute": dictionary["current_minute"],
-        "home_score_ht": dictionary["home_score_ht"],
-        "away_score_ht": dictionary["away_score_ht"],
-        "last_updated": dictionary["last_updated"]
+        "venue_id": dictionary.get("venue_id"),
+        "event_date": datetime.fromisoformat(dictionary["event_date"]),
+        "status": dictionary["status"],
+        "home_score": dictionary.get("home_score"),
+        "away_score": dictionary.get("away_score"),
+        "current_minute": dictionary.get("current_minute"),
+        "home_score_ht": dictionary.get("home_score_ht"),
+        "away_score_ht": dictionary.get("away_score_ht"),
+        "last_updated": datetime.fromisoformat(dictionary["last_updated"])
     }
 
-async def fetch_live_fixtures(league_id: int) -> list[LiveFixture]:
+async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
     """Fetch live fixtures from individual leagues by league id
 
     Args:
         league_id (int): League id from API
 
     Returns:
-        list[LiveFixture]: List of LiveFixture objects
+        list[Fixture]: List of Fixture objects
     """
     if not league_id:
         return []
@@ -70,7 +78,7 @@ async def fetch_live_fixtures(league_id: int) -> list[LiveFixture]:
         live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
-        return [LiveFixture(**transform_live_fixture(fx)) for fx in live_response]
+        return [Fixture(**transform_fixture(fx)) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
@@ -154,17 +162,21 @@ async def fetch_stat(league_id: int, stat: str) -> list[dict]:
         print(f"Request failed: {e}")
 
 async def poll_live_fixtures():
-    for _, details in LEAGUES.items():
-        fixtures = await fetch_live_fixtures(details.get("bzzorio_id", None))
-        if not fixtures:
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_live_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        
+    for response in requests:
+        league_fixtures = response.result()
+        if not league_fixtures:
             continue
-        for fx in fixtures:
+        for fx in league_fixtures:
             print(f"{fx.home_team} {fx.home_score} - {fx.away_score} {fx.away_team}")
             print(f"Time: {fx.current_minute}")
+            print()
             
         async with async_session() as db:
-            for live_fx in fixtures:
-                await upsert_live_fixture(db, orm_to_dict(live_fx))
+            for live_fx in league_fixtures:
+                await upsert_fixture(db, orm_to_dict(live_fx))
                 
 async def main():
     scheduler = AsyncIOScheduler()
