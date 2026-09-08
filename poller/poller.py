@@ -6,7 +6,7 @@ from config.leagues import LEAGUES
 from database.tables import Fixture
 from database.repository import upsert_fixture, orm_to_dict
 from database.database import async_session
-from datetime import datetime
+from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 
@@ -19,6 +19,24 @@ X) Normalize to match the expected data structure with proper labels
 X) Upsert to postgres db
 5.) Publish to Redis for websocket updates
 """
+test_fixture_data = {
+    "id": 999999,
+    "league_id": 39,
+    "home_team_id": 42,
+    "home_team": "Arsenal",
+    "away_team_id": 49,
+    "away_team": "Chelsea",
+    "venue_id": None,
+    "event_date": "2026-09-08T19:00:00+00:00",
+    "status": "live",
+    "home_score": 2,
+    "away_score": 1,
+    "current_minute": 58,
+    "home_score_ht": 1,
+    "away_score_ht": 1,
+    "last_updated": "2026-09-08T19:00:00+00:00"
+}
+
 redis_client = redis.Redis(
     host="localhost",
     port=6379,
@@ -79,6 +97,8 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
+        if not live_response:
+            return [Fixture(**transform_fixture(test_fixture_data))]
         return [Fixture(**transform_fixture(fx)) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
@@ -177,11 +197,11 @@ async def poll_live_fixtures():
                 print(f"Time: {fx.current_minute}")
                 print("=" * 80)
                 await upsert_fixture(db, orm_to_dict(fx))
-                if matches_changed(fx.match_id, orm_to_dict(fx)):
-                    redis_client.publish(
-                        "match-updates",
-                        json.dumps(orm_to_dict(fx), default=str)
-                    )
+                # if matches_changed(fx.match_id, orm_to_dict(fx)):
+                redis_client.publish(
+                    "match-updates",
+                    json.dumps(orm_to_dict(fx), default=str)
+                )
                 
 async def main():
     scheduler = AsyncIOScheduler()
