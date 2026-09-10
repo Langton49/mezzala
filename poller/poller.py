@@ -21,7 +21,7 @@ X) Upsert to postgres db
 """
 test_fixture_data = {
     "id": 999999,
-    "league_id": 39,
+    "league_id": 1,
     "home_team_id": 42,
     "home_team": "Arsenal",
     "away_team_id": 49,
@@ -98,8 +98,8 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
         # ----- TEST -------
-        # if not live_response:
-        #     return [Fixture(**transform_fixture(test_fixture_data))]
+        if not live_response:
+            return [Fixture(**transform_fixture(test_fixture_data))]
         return [Fixture(**transform_fixture(fx)) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")

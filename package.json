@@ -1,0 +1,13 @@
+{
+  "name": "mezzala",
+  "private": true,
+  "scripts": {
+    "poller": "python -m poller.poller",
+    "backend": "python -m uvicorn backend.app.main:app --reload --port 8000",
+    "frontend": "cd frontend && npm run dev",
+    "dev": "concurrently -n poller,backend,frontend -c green,blue,magenta \"npm run poller\" \"npm run backend\" \"npm run frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
