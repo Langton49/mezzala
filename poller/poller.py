@@ -97,8 +97,9 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
-        if not live_response:
-            return [Fixture(**transform_fixture(test_fixture_data))]
+        # ----- TEST -------
+        # if not live_response:
+        #     return [Fixture(**transform_fixture(test_fixture_data))]
         return [Fixture(**transform_fixture(fx)) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
