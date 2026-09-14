@@ -1,10 +1,9 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from uuid import uuid4
-from backend.app.connection_manager import manager
 from backend.app.redis_listener import redis_listener
 import asyncio
 from contextlib import asynccontextmanager
+from backend.connection_manager.routes.matches import matches_routes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,12 +19,4 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-@app.websocket("/ws/live")
-async def live_scores(ws: WebSocket):
-    conn_id = str(uuid4())
-    await manager.connect(conn_id, ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except:
-        manager.disconnect(conn_id)
+app.include_router(matches_routes)

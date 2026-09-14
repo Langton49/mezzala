@@ -21,7 +21,7 @@ export function useLiveScores() {
 
       ws.onmessage = (event) => {
         const data: Match = JSON.parse(event.data);
-        setMatches((prev) => ({ ...prev, [data.match_id]: data }));
+        setMatches((prev) => ({ ...prev, [data.id]: data }));
       };
 
       ws.onclose = () => {

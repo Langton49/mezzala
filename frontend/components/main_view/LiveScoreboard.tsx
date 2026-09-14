@@ -12,7 +12,7 @@ export function LiveScoreboard() {
   return (
     <div className="rounded border border-gray-200">
       {matches.map((match) => (
-        <MatchRow key={match.match_id} match={match} />
+        <MatchRow key={match.id} match={match} />
       ))}
     </div>
   );

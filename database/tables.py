@@ -8,12 +8,20 @@ class Base(DeclarativeBase):
 class Fixture(Base):
     __tablename__ = "fixtures"
 
-    match_id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
     league_id: Mapped[int] = mapped_column(Integer, index=True)
     home_team_id: Mapped[int] = mapped_column(Integer)
     home_team: Mapped[str] = mapped_column(String)
+    home_coach_id: Mapped[int] = mapped_column(Integer, nullable=True)
     away_team_id: Mapped[int] = mapped_column(Integer)
     away_team: Mapped[str] = mapped_column(String)
+    away_coach_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    referee_id: Mapped[int] = mapped_column(Integer, nullable=True)
+    round_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    round_name: Mapped[str] = mapped_column(String, nullable=True)
+    group_name: Mapped[str] = mapped_column(String, nullable=True)
+    stage: Mapped[str] = mapped_column(String, nullable=True)
+    stage_name: Mapped[str] = mapped_column(String, nullable=True)
     venue_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String, index=True, default="upcoming")
