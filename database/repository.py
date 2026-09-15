@@ -3,7 +3,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from .tables import Fixture, News, Team
 from sqlalchemy import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 def transform_fixture(dictionary: dict) -> dict:
     last_updated = dictionary.get("last_updated")
@@ -63,15 +63,41 @@ def current_season_start() -> datetime:
     year = now.year if now.month >= 7 else now.year - 1
     return datetime(year, 7, 1, tzinfo=timezone.utc)
 
-async def get_matches_by_league(db: AsyncSession, league_id: int, stage: str, round: int) -> list[Fixture]:
+async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
+    """Get league matches by round/matchday
+
+    Args:
+        db (AsyncSession): _description_
+        league_id (int): _description_
+        round (int): _description_
+
+    Returns:
+        list[Fixture]: _description_
+    """
     result = await db.execute(
         select(Fixture)
         .where(Fixture.league_id == league_id)
-        .where(Fixture.stage == stage)
         .where(Fixture.round_number == round)
         .where(Fixture.event_date >= current_season_start())
     )
     return result.scalars().all()
 
+async def get_matches_by_id_date(db: AsyncSession, league_id: int, date: datetime) -> list[Fixture]:
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    result = await db.execute(select(Fixture)
+                              .where(Fixture.league_id == league_id)
+                              .where(Fixture.event_date >= day_start)
+                              .where(Fixture.event_date < day_end))
+    return result.scalars().all()
+
+async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]:
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    result = await db.execute(select(Fixture)
+                            .where(Fixture.event_date >= day_start)
+                            .where(Fixture.event_date < day_end))
+    return result.scalars().all()
+    
 def orm_to_dict(obj) -> dict:
     return {col.key: getattr(obj, col.key) for col in inspect(obj).mapper.column_attrs}

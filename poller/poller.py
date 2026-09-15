@@ -4,9 +4,9 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixture, orm_to_dict, upsert_batch, transform_fixture
+from database.repository import upsert_fixture, orm_to_dict, transform_fixture
 from database.database import async_session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 """
@@ -77,16 +77,13 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
-        # ----- TEST -------
-        if not live_response:
-            return [Fixture(**transform_fixture(test_fixture_data))]
         return [Fixture(**transform_fixture(fx)) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
 
-async def fetch_league_fixtures(league_id: int, round: int, comp: str) -> list[Fixture]:
+async def fetch_fixtures_by_id(league_id: int, round: int, comp: str) -> list[Fixture]:
     """Fetch upcoming league fixtures by league id
 
     Args:
@@ -96,11 +93,28 @@ async def fetch_league_fixtures(league_id: int, round: int, comp: str) -> list[F
         list[Fixture]: A list of the Fixture object for each response fixture from the API
     """
     try:
-        if comp == "league":
-            fixture_request = client.get(f"events/", params={"league_id": league_id, "status": "upcoming", "stage": "regular-season", "round": round, "date_from": f"{datetime.now().strftime("%Y-%m-%d")}", "date_to": f"{datetime.now().strftime("%Y-%m-%d") + timedelta(days=7)}"})
+        fixture_request = await client.get(f"events/", params={"league_id": league_id, "status": "upcoming", "stage": "regular-season", "round": round, "date_from": f"{datetime.now().strftime("%Y-%m-%d")}", "date_to": f"{datetime.now().strftime("%Y-%m-%d") + timedelta(days=7)}"})
         fixture_request.raise_for_status()
         league_fixtures = fixture_request.json()["results"]
         return [Fixture(**transform_fixture(fx)) for fx in league_fixtures]
+    except httpx.HTTPStatusError as e:
+        print(f"API returned HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        print(f"Request failed: {e}")
+
+async def fetch_fixtures_by_date(date: datetime):
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=7)
+    res = []
+    try:
+        fixture_request = await client.get(f"events/", params={"date_from": f"{day_start}", "date_to": f"{day_end}"})
+        fixture_request.raise_for_status()
+        while fixture_request.status_code == 200:
+            res.extend([Fixture(**transform_fixture(fx)) for fx in fixture_request.json()["results"]])
+            fixture_request = await client.get(f"{fixture_request.json()["next"]}")
+        
+        res = [fx for fx in res if fx.league_id in set([det.get("bzzorio_id", 0) for det in LEAGUES.values()])]
+        return res
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
@@ -175,19 +189,28 @@ async def poll_live_fixtures():
                 continue
             
             for fx in league_fixtures:
-                print(f"{fx.home_team} {fx.home_score} - {fx.away_score} {fx.away_team}")
-                print(f"Time: {fx.current_minute}")
-                print("=" * 80)
+                print(f"Upserting match with id: {fx.id}")
                 await upsert_fixture(db, orm_to_dict(fx))
                 if matches_changed(fx.id, orm_to_dict(fx)):
                     redis_client.publish(
                         "match-updates",
                         json.dumps(orm_to_dict(fx), default=str)
                     )
+
+async def poll_upcoming_matches():
+    """Fetch and upsert fixtures for the next week to ensure fixtures in postgres arent stale when venues, managers or referees change
+    """
+    current_day = datetime.now()
+    fixtures = await fetch_fixtures_by_date(current_day)
+    async with async_session() as db:
+        print(f"Daily poll for upcoming matches")
+        for fx in fixtures:
+            await upsert_fixture(db, orm_to_dict(fx))
                 
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
+    scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
     scheduler.start()
     
     print(f"Poller running")
