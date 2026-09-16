@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, News, Team
+from .tables import Fixture, News, Team, CompetitionStages
 from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
@@ -33,6 +33,20 @@ def transform_fixture(dictionary: dict) -> dict:
         # bzzorio never sends this field, only the poller's fabricated test_fixture_data does —
         # treat it as optional and stamp our own ingestion time when it's missing.
         "last_updated": datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
+    }
+
+def transform_stage(dictionary: dict, league_id: int, sort_order: int) -> dict:
+    # league_id and sort_order aren't on the raw stage object at all — league_id comes
+    # from whichever league's /season/ response we're processing, and sort_order is the
+    # stage's position in that response's `stages` array (bzzorio doesn't send an index).
+    return {
+        "league_id": league_id,
+        "stage": dictionary["stage"],
+        "stage_name": dictionary["stage_name"],
+        "rounds": dictionary["rounds"],
+        "sort_order": sort_order,
+        "start_date": datetime.fromisoformat(dictionary["start_date"]).replace(tzinfo=timezone.utc),
+        "end_date": datetime.fromisoformat(dictionary["end_date"]).replace(tzinfo=timezone.utc),
     }
 
 async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
@@ -97,7 +111,16 @@ async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]
     result = await db.execute(select(Fixture)
                             .where(Fixture.event_date >= day_start)
                             .where(Fixture.event_date < day_end))
-    return result.scalars().all()
+    return result.scalars().all()    
     
 def orm_to_dict(obj) -> dict:
     return {col.key: getattr(obj, col.key) for col in inspect(obj).mapper.column_attrs}
+
+async def upsert_stage(db: AsyncSession, stage: dict):
+    statement = insert(CompetitionStages).values(**stage)
+    statement = statement.on_conflict_do_update(
+        index_elements=['league_id', 'stage'],
+        set_={col: val for col, val in stage.items() if col != "id"}
+    )
+    await db.execute(statement)
+    await db.commit()

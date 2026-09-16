@@ -28,10 +28,21 @@ async def seed(league_id: int) -> list[Fixture]:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+
+async def get_curr_stage():
+    try:
+        struct = await client.get(f"leagues/7/seasons/")
+        struct.raise_for_status()
+        print(struct.json()['seasons'][0])
+    except httpx.HTTPStatusError as e:
+        print(f"API returned HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        print(f"Request failed: {e}")
         
 async def main():
-    for dets in LEAGUES.values():
-        await seed(dets.get("bzzorio_id", 0))
+    await get_curr_stage()
+    # for dets in LEAGUES.values():
+    #     await seed(dets.get("bzzorio_id", 0))
         
 if __name__ == "__main__":
     asyncio.run(main())

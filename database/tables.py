@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, DateTime, ForeignKey
+from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime, timezone
 
@@ -54,4 +54,20 @@ class Team(Base):
     team_id: Mapped[int] = mapped_column(primary_key=True)
     league_id: Mapped[int] = mapped_column(Integer, index=True)
     team_name: Mapped[str] = mapped_column(String)
+    
+class CompetitionStages(Base):
+    __tablename__ = "comp_stages"
+    __table_args__ = (
+        UniqueConstraint("league_id", "stage", name="uq_comp_stages_league_id_stage"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    league_id: Mapped[int] = mapped_column(Integer, index=True)
+    stage: Mapped[str] = mapped_column(String)
+    stage_name: Mapped[str] = mapped_column(String)
+    rounds: Mapped[int] = mapped_column(Integer)
+    sort_order: Mapped[int] = mapped_column(Integer)
+    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    
     

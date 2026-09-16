@@ -4,7 +4,7 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixture, orm_to_dict, transform_fixture
+from database.repository import upsert_fixture, orm_to_dict, transform_fixture, transform_stage, upsert_stage
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -78,6 +78,22 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
         return [Fixture(**transform_fixture(fx)) for fx in live_response]
+    except httpx.HTTPStatusError as e:
+        print(f"API returned HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        print(f"Request failed: {e}")
+
+async def fetch_current_stage(league_id: int) -> list[dict]:
+    try:
+        req = await client.get(f"/leagues/{league_id}/season/")
+        req.raise_for_status()
+        result = req.json()['season']
+        comp_stages = []
+        if result['is_current']:
+            stages = result['stages']
+            for idx, stage in enumerate(stages):
+                comp_stages.append(transform_stage(stage, league_id, idx + 1))
+        return comp_stages
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
@@ -207,10 +223,20 @@ async def poll_upcoming_matches():
         for fx in fixtures:
             await upsert_fixture(db, orm_to_dict(fx))
                 
+async def poll_stages():
+    print("Daily poll for stages")
+    async with async_session() as db:
+        for details in LEAGUES.values():
+            stages = await fetch_current_stage(details['bzzorio_id'])
+            for stage in stages:
+                await upsert_stage(db, stage)
+        
+
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
+    scheduler.add_job(poll_stages, "interval", days=1, id="stages", next_run_time=datetime.now())
     scheduler.start()
     
     print(f"Poller running")
