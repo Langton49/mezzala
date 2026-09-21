@@ -1,7 +1,7 @@
 export function PlayerStatsView({leagueId}: {leagueId: number | null}){
     return (
-        <div>
-            PLAYER STATS
+        <div className="p-8 text-center text-sm text-muted-foreground">
+            {leagueId === null ? "Select a league to see statistics." : "Statistics coming soon."}
         </div>
     )
 }

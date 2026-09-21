@@ -12,10 +12,18 @@ export function Ribbon(){
     const {currTab, setCurrTab} = useDashboard();
 
     return (
-        <div className="flex gap-4 border-b p-2">
+        <div className="flex gap-1 border-b border-border bg-card px-2">
             {
                 TABS.map((tab) => (
-                    <button key={tab.key} onClick={() => setCurrTab(tab.key)} className={currTab === tab.key ? "font-bold" : ""}>
+                    <button
+                        key={tab.key}
+                        onClick={() => setCurrTab(tab.key)}
+                        className={`-mb-px border-b-2 px-3 py-3 text-sm font-medium transition-colors ${
+                            currTab === tab.key
+                                ? "border-primary text-primary"
+                                : "border-transparent text-muted-foreground hover:text-foreground"
+                        }`}
+                    >
                         {tab.label}
                     </button>
                 ))
@@ -23,4 +31,3 @@ export function Ribbon(){
         </div>
     )
 }
-

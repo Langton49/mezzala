@@ -9,7 +9,7 @@ export function MainView(){
     const {currTab, currLeague} = useDashboard();
 
     return(
-        <div className="flex flex-col">
+        <div className="flex flex-col overflow-hidden">
             <Ribbon/>
             <div className="flex-1 overflow-auto p-4">
                 {currTab === "standings" && <StandingsView leagueId={currLeague}/>}

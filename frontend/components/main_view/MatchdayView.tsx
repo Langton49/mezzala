@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Fixture } from "@/lib/types";
+import { FixtureRow, FixtureListSkeleton } from "./FixtureRow";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -41,25 +42,41 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
   }, [leagueId, round]);
 
   if (leagueId === null) {
-    return <div>Select a league to see matchdays.</div>;
+    return <div className="p-8 text-center text-sm text-muted-foreground">Select a league to see matchdays.</div>;
   }
 
   return (
     <div>
-      <div>
-        <button onClick={() => setRound((r) => Math.max(1, (r ?? 1) - 1))}>Previous</button>
-        <span> {stageName ?? "Round"} {round ?? ""} </span>
-        <button onClick={() => setRound((r) => (r ?? 1) + 1)}>Next</button>
+      <div className="mb-3 flex items-center justify-between">
+        <button
+          onClick={() => setRound((r) => Math.max(1, (r ?? 1) - 1))}
+          className="rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:border-border-strong hover:bg-muted"
+        >
+          ← Previous
+        </button>
+        <span className="text-sm font-medium text-primary">
+          {stageName ?? "Round"} {round ?? ""}
+        </span>
+        <button
+          onClick={() => setRound((r) => (r ?? 1) + 1)}
+          className="rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:border-border-strong hover:bg-muted"
+        >
+          Next →
+        </button>
       </div>
-      {loading && <div>Loading...</div>}
-      <ul>
-        {!loading && matches.length === 0 && <li>No matches found.</li>}
-        {matches.map((m) => (
-          <li key={m.id}>
-            {m.home_team} {m.home_score ?? "-"} : {m.away_score ?? "-"} {m.away_team} ({m.status})
-          </li>
-        ))}
-      </ul>
+
+      {loading ? (
+        <FixtureListSkeleton />
+      ) : (
+        <div key={`${leagueId}-${round}`} className="fixture-list-enter overflow-hidden rounded-lg border border-border bg-card">
+          {matches.length === 0 && (
+            <div className="p-8 text-center text-sm text-muted-foreground">No matches found.</div>
+          )}
+          {matches.map((m) => (
+            <FixtureRow key={m.id} fixture={m} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
