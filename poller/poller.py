@@ -217,7 +217,7 @@ async def poll_upcoming_matches():
     """Fetch and upsert fixtures for the next week to ensure fixtures in postgres arent stale when venues, managers or referees change
     """
     current_day = datetime.now()
-    fixtures = await fetch_fixtures_by_date(current_day)
+    fixtures = await fetch_fixtures_by_date(current_day - timedelta(days=5))
     async with async_session() as db:
         print(f"Daily poll for upcoming matches")
         for fx in fixtures:

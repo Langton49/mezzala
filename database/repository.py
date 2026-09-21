@@ -77,6 +77,80 @@ def current_season_start() -> datetime:
     year = now.year if now.month >= 7 else now.year - 1
     return datetime(year, 7, 1, tzinfo=timezone.utc)
 
+async def get_current_stage(db: AsyncSession, league_id: int) -> CompetitionStages | None:
+    now = datetime.now(timezone.utc)
+
+    # the common case: "now" falls inside some stage's span
+    res = await db.execute(
+        select(CompetitionStages)
+        .where(CompetitionStages.league_id == league_id)
+        .where(CompetitionStages.start_date <= now)
+        .where(CompetitionStages.end_date >= now)
+    )
+    stage = res.scalars().first()
+    if stage:
+        return stage
+
+    # gap between two stages (e.g. playoff-round has ended, league-phase hasn't
+    # started yet) — fall forward to whichever stage starts soonest
+    res = await db.execute(
+        select(CompetitionStages)
+        .where(CompetitionStages.league_id == league_id)
+        .where(CompetitionStages.start_date > now)
+        .order_by(CompetitionStages.start_date.asc())
+    )
+    stage = res.scalars().first()
+    if stage:
+        return stage
+
+    # nothing upcoming either (season's over, or comp_stages hasn't been synced
+    # for the new season yet) — fall back to whatever ended most recently
+    res = await db.execute(
+        select(CompetitionStages)
+        .where(CompetitionStages.league_id == league_id)
+        .order_by(CompetitionStages.end_date.desc())
+    )
+    return res.scalars().first()
+
+async def get_current_round(db: AsyncSession, league_id: int) -> dict | None:
+    """Resolve which stage AND which round within it is "current" for a league.
+
+    comp_stages only knows a stage's overall span, not per-round dates, so
+    finding the round still requires a second lookup against fixtures.
+    """
+    stage = await get_current_stage(db, league_id)
+    if stage is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # most recent fixture in this stage that's already kicked off
+    res = await db.execute(
+        select(Fixture)
+        .where(Fixture.league_id == league_id)
+        .where(Fixture.stage == stage.stage)
+        .where(Fixture.event_date <= now)
+        .order_by(Fixture.event_date.desc())
+    )
+    fixture = res.scalars().first()
+
+    if fixture is None:
+        # nothing in this stage has started yet — take the soonest upcoming one
+        res = await db.execute(
+            select(Fixture)
+            .where(Fixture.league_id == league_id)
+            .where(Fixture.stage == stage.stage)
+            .where(Fixture.event_date > now)
+            .order_by(Fixture.event_date.asc())
+        )
+        fixture = res.scalars().first()
+
+    return {
+        "stage": stage.stage,
+        "stage_name": stage.stage_name,
+        "round_number": fixture.round_number if fixture else None,
+    }
+
 async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
     """Get league matches by round/matchday
 

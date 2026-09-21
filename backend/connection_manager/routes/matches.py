@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.connection_manager import manager
 from uuid import uuid4
 from database.database import get_session
-from database.repository import get_matches_by_round, get_matches_by_id_date, get_matches_by_date
+from database.repository import get_matches_by_round, get_matches_by_id_date, get_matches_by_date, get_current_round
 from backend.types.types import FixtureOut
 from datetime import datetime
 
@@ -31,3 +31,7 @@ async def get_id_date_matches(league_id: str, date: str, db: AsyncSession = Depe
 @matches_routes.get("/matches/date/{date}", response_model=list[FixtureOut])
 async def get_date_matches(date: str, db: AsyncSession = Depends(get_session)):
     return await get_matches_by_date(db, datetime.fromisoformat(date))
+
+@matches_routes.get("/matches/{league_id}/current")
+async def get_current_league_round(league_id: str, db: AsyncSession = Depends(get_session)):
+    return await get_current_round(db, int(league_id))
