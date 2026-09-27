@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, News, Team, CompetitionStages
+from .tables import Fixture, News, Team, CompetitionStages, Standing
 from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
@@ -35,11 +35,12 @@ def transform_fixture(dictionary: dict) -> dict:
         "last_updated": datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
     }
 
-def transform_stage(dictionary: dict, league_id: int, sort_order: int) -> dict:
+def transform_stage(dictionary: dict, league_id: int, season_id: int, sort_order: int) -> dict:
     # league_id and sort_order aren't on the raw stage object at all — league_id comes
     # from whichever league's /season/ response we're processing, and sort_order is the
     # stage's position in that response's `stages` array (bzzorio doesn't send an index).
     return {
+        "season_id": season_id,
         "league_id": league_id,
         "stage": dictionary["stage"],
         "stage_name": dictionary["stage_name"],
@@ -48,7 +49,35 @@ def transform_stage(dictionary: dict, league_id: int, sort_order: int) -> dict:
         "start_date": datetime.fromisoformat(dictionary["start_date"]).replace(tzinfo=timezone.utc),
         "end_date": datetime.fromisoformat(dictionary["end_date"]).replace(tzinfo=timezone.utc),
     }
-
+    
+def transform_standings(standings: list[dict], league_id: int, curr_season: int) -> list[dict]:
+    result = []
+    for pos in standings:
+        zone = pos.get('zone')
+        result.append({
+            'league_id': league_id,
+            'season_id': curr_season,
+            'team_id': pos['team_id'],
+            'team_name': pos['team_name'],
+            'position': pos['position'],
+            'played': pos['played'],
+            'won': pos['won'],
+            'drawn': pos['drawn'],
+            'lost': pos['lost'],
+            'gf': pos['gf'],
+            'ga': pos['ga'],
+            'gd': pos['gd'],
+            'pts': pos['pts'],
+            'xgf': pos.get('xgf'),
+            'xga': pos.get('xga'),
+            'xgd': pos.get('xgd'),
+            'form': pos.get('form'),
+            'zone_key': zone['key'] if zone else None,
+            'zone_label': zone['label'] if zone else None,
+            'zone_type': zone['type'] if zone else None,
+        })
+    return result
+        
 async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
     statement = insert(Fixture).values(**fixture_data)
     statement = statement.on_conflict_do_update(
@@ -198,3 +227,20 @@ async def upsert_stage(db: AsyncSession, stage: dict):
     )
     await db.execute(statement)
     await db.commit()
+    
+async def upsert_standings(db: AsyncSession, standings: list[dict]):
+    for pos in standings:
+        statement = insert(Standing).values(**pos)
+        statement = statement.on_conflict_do_update(
+            index_elements=['league_id', 'season_id', 'team_id'],
+            set_={col: val for col, val in pos.items()}
+        )
+        await db.execute(statement)
+        await db.commit()
+        
+async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> list[Standing]:
+    results = await db.execute(select(Standing)
+                               .where(Standing.league_id == league_id)
+                               .where(Standing.season_id == curr_season)
+                               .order_by(Standing.position.asc()))
+    return results.scalars().all()

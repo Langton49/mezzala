@@ -4,7 +4,7 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixture, orm_to_dict, transform_fixture, transform_stage, upsert_stage
+from database.repository import upsert_fixture, orm_to_dict, transform_fixture, transform_standings, transform_stage, upsert_stage, get_current_stage, upsert_standings
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -88,11 +88,12 @@ async def fetch_current_stage(league_id: int) -> list[dict]:
         req = await client.get(f"/leagues/{league_id}/season/")
         req.raise_for_status()
         result = req.json()['season']
+        season_id = result['id']
         comp_stages = []
         if result['is_current']:
             stages = result['stages']
             for idx, stage in enumerate(stages):
-                comp_stages.append(transform_stage(stage, league_id, idx + 1))
+                comp_stages.append(transform_stage(stage, league_id, season_id, idx + 1))
         return comp_stages
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
@@ -165,9 +166,15 @@ async def fetch_standings(league_id: int) -> list[dict]:
         list[dict]: List of each teams entry in the league table. Each dict contains team stats as well as position for the league table
     """
     try:
-        standings_request = client.get(f"leagues/{league_id}/standings")
+        async with async_session() as db:
+            curr_stage = await get_current_stage(db, league_id)
+        if not curr_stage:
+            raise Exception("Season id not found")
+        curr_season = curr_stage.season_id
+        standings_request = await client.get(f"leagues/{league_id}/standings/?season_id={curr_season}")
         standings_request.raise_for_status()
         standings = standings_request.json()['standings']
+        standings = transform_standings(standings, league_id, curr_season)
         return standings
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
@@ -230,13 +237,20 @@ async def poll_stages():
             stages = await fetch_current_stage(details['bzzorio_id'])
             for stage in stages:
                 await upsert_stage(db, stage)
-        
+                
+async def poll_standings():
+    print("Daily poll for league standings")
+    async with async_session() as db:
+        for details in LEAGUES.values():
+            standings = await fetch_standings(details['bzzorio_id'])
+            await upsert_standings(db, standings)
 
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
     scheduler.add_job(poll_stages, "interval", days=1, id="stages", next_run_time=datetime.now())
+    scheduler.add_job(poll_standings, "interval", days=1, id="standings", next_run_time=datetime.now())
     scheduler.start()
     
     print(f"Poller running")
@@ -244,6 +258,6 @@ async def main():
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
-        
+    
 if __name__ == "__main__":
     asyncio.run(main())

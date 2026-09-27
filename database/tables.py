@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Integer, DateTime, UniqueConstraint, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime, timezone
 
@@ -62,6 +62,7 @@ class CompetitionStages(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    season_id: Mapped[int] = mapped_column(Integer, index=True)
     league_id: Mapped[int] = mapped_column(Integer, index=True)
     stage: Mapped[str] = mapped_column(String)
     stage_name: Mapped[str] = mapped_column(String)
@@ -69,5 +70,35 @@ class CompetitionStages(Base):
     sort_order: Mapped[int] = mapped_column(Integer)
     start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    
+class Standing(Base):
+    __tablename__ = "standings"
+    __table_args__ = (
+        UniqueConstraint("league_id", "season_id", "team_id", name="uq_standings_league_season_team"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    league_id: Mapped[int] = mapped_column(Integer, index=True)
+    season_id: Mapped[int] = mapped_column(Integer, index=True)
+    team_id: Mapped[int] = mapped_column(Integer, index=True)
+    team_name: Mapped[str] = mapped_column(String)
+    position: Mapped[int] = mapped_column(Integer)
+    played: Mapped[int] = mapped_column(Integer)
+    won: Mapped[int] = mapped_column(Integer)
+    drawn: Mapped[int] = mapped_column(Integer)
+    lost: Mapped[int] = mapped_column(Integer)
+    gf: Mapped[int] = mapped_column(Integer)
+    ga: Mapped[int] = mapped_column(Integer)
+    gd: Mapped[int] = mapped_column(Integer)
+    pts: Mapped[int] = mapped_column(Integer)
+    xgf: Mapped[float | None] = mapped_column(Float, nullable=True)
+    xga: Mapped[float | None] = mapped_column(Float, nullable=True)
+    xgd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    form: Mapped[str | None] = mapped_column(String, nullable=True)
+    zone_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    zone_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    zone_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
     
     

@@ -22,3 +22,27 @@ class FixtureOut(BaseModel):
     status: str
     home_score: int | None
     away_score: int | None
+    
+class StandingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    league_id: int
+    season_id: int
+    team_id: int
+    team_name: str
+    position: int
+    played: int
+    won: int
+    drawn: int
+    lost: int
+    gf: int
+    ga: int
+    gd: int
+    pts: int
+    xgf: float | None
+    xga: float | None
+    xgd: float | None
+    form: str | None
+    zone_key: str | None
+    zone_label: str | None
+    zone_type: str | None

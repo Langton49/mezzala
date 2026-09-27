@@ -4,6 +4,7 @@ from backend.app.redis_listener import redis_listener
 import asyncio
 from contextlib import asynccontextmanager
 from backend.connection_manager.routes.matches import matches_routes
+from backend.connection_manager.routes.standings import standings_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,4 +20,9 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
+
 app.include_router(matches_routes)
+app.include_router(standings_router)

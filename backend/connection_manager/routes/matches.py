@@ -1,6 +1,5 @@
-from fastapi import FastAPI, WebSocket, APIRouter, Depends
+from fastapi import WebSocket, APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi.middleware.cors import CORSMiddleware
 from backend.app.connection_manager import manager
 from uuid import uuid4
 from database.database import get_session

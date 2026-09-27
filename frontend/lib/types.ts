@@ -19,6 +19,29 @@ export interface Fixture {
   away_score: number | null;
 }
 
+export interface Standing {
+  league_id: number;
+  season_id: number;
+  team_id: number;
+  team_name: string;
+  position: number;
+  played: number;
+  won: number;
+  drawn: number;
+  lost: number;
+  gf: number;
+  ga: number;
+  gd: number;
+  pts: number;
+  xgf: number | null;
+  xga: number | null;
+  xgd: number | null;
+  form: string | null;
+  zone_key: string | null;
+  zone_label: string | null;
+  zone_type: string | null;
+}
+
 export interface Match {
   id: number;
   league_id: number;
