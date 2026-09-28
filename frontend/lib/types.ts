@@ -42,6 +42,20 @@ export interface Standing {
   zone_type: string | null;
 }
 
+export interface PlayerStat {
+  league_id: number;
+  season_id: number;
+  stat_type: string;
+  rank: number;
+  player_id: number;
+  player_name: string;
+  player_position: string | null;
+  team_id: number;
+  team_name: string;
+  value: number;
+  matches: number;
+}
+
 export interface Match {
   id: number;
   league_id: number;

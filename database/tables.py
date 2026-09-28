@@ -100,5 +100,22 @@ class Standing(Base):
     zone_type: Mapped[str | None] = mapped_column(String, nullable=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    
-    
+class PlayerStat(Base):
+    __tablename__ = "player_stats"
+    __table_args__ = (
+        UniqueConstraint("league_id", "season_id", "stat_type", "player_id",
+                          name="uq_player_stats_league_season_stat_player"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    league_id: Mapped[int] = mapped_column(Integer, index=True)
+    season_id: Mapped[int] = mapped_column(Integer, index=True)
+    stat_type: Mapped[str] = mapped_column(String, index=True)  # "scorers" | "assists" | "yellowcards" | "redcards" | "fouls"
+    rank: Mapped[int] = mapped_column(Integer)
+    player_id: Mapped[int] = mapped_column(Integer)
+    player_name: Mapped[str] = mapped_column(String)
+    player_position: Mapped[str | None] = mapped_column(String, nullable=True)
+    team_id: Mapped[int] = mapped_column(Integer)
+    team_name: Mapped[str] = mapped_column(String)
+    value: Mapped[int] = mapped_column(Integer)
+    matches: Mapped[int] = mapped_column(Integer)

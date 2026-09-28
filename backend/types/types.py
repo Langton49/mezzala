@@ -46,3 +46,18 @@ class StandingsOut(BaseModel):
     zone_key: str | None
     zone_label: str | None
     zone_type: str | None
+    
+class StatOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    league_id: int
+    season_id: int
+    stat_type: str
+    rank: int
+    player_id: int
+    player_name: str
+    player_position: str | None
+    team_id: int
+    team_name: str
+    value: int
+    matches: int

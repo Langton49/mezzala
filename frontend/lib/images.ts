@@ -14,3 +14,10 @@ export function teamLogoUrl(teamId: number): string {
 export function leagueLogoUrl(leagueId: number): string {
   return `${IMAGE_BASE}/league/${leagueId}/?bg=transparent`;
 }
+
+// sor=true asks for the cut-out face-style crop when bzzorio has one; it
+// silently falls back to the regular player photo otherwise, so it's always
+// safe to request.
+export function playerFaceUrl(playerId: number): string {
+  return `${IMAGE_BASE}/player/${playerId}/?sor=true&bg=transparent`;
+}

@@ -1,8 +1,8 @@
 "use client";
 import { useState } from "react";
-import { teamLogoUrl, leagueLogoUrl } from "@/lib/images";
+import { teamLogoUrl, leagueLogoUrl, playerFaceUrl } from "@/lib/images";
 
-type LogoKind = "team" | "league";
+type LogoKind = "team" | "league" | "player";
 
 // Session-wide cache of ids known to have no image (the API returns 204, not
 // 404, for a valid id with nothing to serve — see lib/images.ts). Remembering
@@ -43,10 +43,11 @@ export function Logo({ id, kind, alt, size = 24 }: LogoProps) {
   const [failed, setFailed] = useState(() => (key ? missingLogos.has(key) : true));
 
   if (!key || failed) {
-    return <Placeholder size={size} alt={alt} />;
+    return <Placeholder size={size} alt={alt} kind={kind} />;
   }
 
-  const src = kind === "team" ? teamLogoUrl(id!) : leagueLogoUrl(id!);
+  const src =
+    kind === "team" ? teamLogoUrl(id!) : kind === "league" ? leagueLogoUrl(id!) : playerFaceUrl(id!);
 
   return (
     <img
@@ -56,7 +57,7 @@ export function Logo({ id, kind, alt, size = 24 }: LogoProps) {
       height={size}
       loading="lazy"
       decoding="async"
-      className="shrink-0 object-contain"
+      className={`shrink-0 object-contain ${kind === "player" ? "rounded-full bg-muted" : ""}`}
       style={{ width: size, height: size }}
       onError={() => {
         markMissing(key);
@@ -66,7 +67,29 @@ export function Logo({ id, kind, alt, size = 24 }: LogoProps) {
   );
 }
 
-function Placeholder({ size, alt }: { size: number; alt: string }) {
+function Placeholder({ size, alt, kind }: { size: number; alt: string; kind: LogoKind }) {
+  if (kind === "player") {
+    return (
+      <svg
+        role="img"
+        aria-label={alt}
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        className="shrink-0 rounded-full bg-muted text-border-strong"
+      >
+        <circle cx="12" cy="9" r="3.2" stroke="currentColor" strokeWidth="1.2" />
+        <path
+          d="M5 19c1-3.2 4-5 7-5s6 1.8 7 5"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
   return (
     <svg
       role="img"

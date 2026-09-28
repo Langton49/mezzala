@@ -4,7 +4,7 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixture, orm_to_dict, transform_fixture, transform_standings, transform_stage, upsert_stage, get_current_stage, upsert_standings
+from database.repository import upsert_fixture, upsert_stat, orm_to_dict, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stage, get_current_stage, upsert_standings
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -47,6 +47,7 @@ client = httpx.AsyncClient(
     headers={"Authorization": f"Token {settings.bzzorio_api_key}"},
     timeout=10.0    
 )
+
 LIVE_MATCHES_STORE: dict[int, tuple] = {}
 
 def matches_changed(fixture_id: int, fixture_data: dict) -> bool:
@@ -181,7 +182,7 @@ async def fetch_standings(league_id: int) -> list[dict]:
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
         
-async def fetch_stat(league_id: int, stat: str) -> list[dict]:
+async def fetch_stat(league_id: int) -> list[dict]:
     """Fetch specified stat `stat` from the API for the given league id
 
     Args:
@@ -191,11 +192,20 @@ async def fetch_stat(league_id: int, stat: str) -> list[dict]:
     Returns:
         list[dict]: List of each players entry in the stat table along with the stats and position. The main stat (i.e. Goal, Assist) is represented by the value key
     """
+    tags = ['scorers', 'assists', 'yellowcards', 'redcards', 'fouls']
+    league_stats = []
     try:
-        stat_request = client.get(f"leagues/{league_id}/top/{stat}")
-        stat_request.raise_for_status()
-        stats = stat_request.json()['leaders']
-        return stats
+        async with async_session() as db:
+            curr_stage = await get_current_stage(db, league_id)
+        if not curr_stage:
+            raise Exception("Season id not found")
+        curr_season = curr_stage.season_id
+        for stat in tags:
+            stat_request = await client.get(f"leagues/{league_id}/top/{stat}/")
+            stat_request.raise_for_status()
+            stats = stat_request.json()['leaders']
+            league_stats.extend(transform_stat(stats, league_id, curr_season, stat))
+        return league_stats
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
@@ -244,6 +254,14 @@ async def poll_standings():
         for details in LEAGUES.values():
             standings = await fetch_standings(details['bzzorio_id'])
             await upsert_standings(db, standings)
+            
+async def poll_stat():
+    print("Daily poll for stats")
+    async with async_session() as db:
+        for details in LEAGUES.values():
+            stats = await fetch_stat(details['bzzorio_id'])
+            await upsert_stat(db, stats)
+    print('Stat poll done')
 
 async def main():
     scheduler = AsyncIOScheduler()
@@ -251,6 +269,7 @@ async def main():
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
     scheduler.add_job(poll_stages, "interval", days=1, id="stages", next_run_time=datetime.now())
     scheduler.add_job(poll_standings, "interval", days=1, id="standings", next_run_time=datetime.now())
+    scheduler.add_job(poll_stat, "interval", days=1, id='stats', next_run_time=datetime.now())
     scheduler.start()
     
     print(f"Poller running")
@@ -258,6 +277,7 @@ async def main():
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+    
     
 if __name__ == "__main__":
     asyncio.run(main())

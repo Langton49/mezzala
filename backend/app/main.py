@@ -5,6 +5,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from backend.connection_manager.routes.matches import matches_routes
 from backend.connection_manager.routes.standings import standings_router
+from backend.connection_manager.routes.stats import stat_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,3 +27,4 @@ async def health_check():
 
 app.include_router(matches_routes)
 app.include_router(standings_router)
+app.include_router(stat_router)

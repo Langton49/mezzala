@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, News, Team, CompetitionStages, Standing
+from .tables import Fixture, News, Team, CompetitionStages, Standing, PlayerStat
 from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
@@ -49,6 +49,24 @@ def transform_stage(dictionary: dict, league_id: int, season_id: int, sort_order
         "start_date": datetime.fromisoformat(dictionary["start_date"]).replace(tzinfo=timezone.utc),
         "end_date": datetime.fromisoformat(dictionary["end_date"]).replace(tzinfo=timezone.utc),
     }
+    
+def transform_stat(stats: list[dict], league_id: int, curr_season: int, stat_type: str) -> list[dict]:
+    result = []
+    for rank in stats:
+        result.append({
+            'league_id': league_id,
+            'season_id': curr_season,
+            'stat_type': stat_type,
+            'rank': rank['rank'],
+            'player_id': rank['player_id'],
+            'player_name': rank['player_name'],
+            'player_position': rank['position'],
+            'team_id': rank['team_id'],
+            'team_name': rank['team_name'],
+            'value': rank['value'],
+            'matches': rank['matches']
+        })
+    return result
     
 def transform_standings(standings: list[dict], league_id: int, curr_season: int) -> list[dict]:
     result = []
@@ -243,4 +261,22 @@ async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> l
                                .where(Standing.league_id == league_id)
                                .where(Standing.season_id == curr_season)
                                .order_by(Standing.position.asc()))
+    return results.scalars().all()
+
+async def upsert_stat(db: AsyncSession, stats: list[dict]):
+    for ranking in stats:
+        statement = insert(PlayerStat).values(**ranking)
+        statement = statement.on_conflict_do_update(
+            index_elements=["league_id", "season_id", "stat_type", "player_id"],
+            set_={col: val for col, val in ranking.items()}
+        )
+        await db.execute(statement)
+        await db.commit()
+        
+async def get_stat(db: AsyncSession, league_id: int, curr_season: int, stat: str) -> list[PlayerStat]:
+    results = await db.execute(select(PlayerStat)
+                               .where(PlayerStat.league_id == league_id)
+                               .where(PlayerStat.season_id == curr_season)
+                               .where(PlayerStat.stat_type == stat)
+                               .order_by(PlayerStat.rank.asc()))
     return results.scalars().all()
