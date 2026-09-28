@@ -22,7 +22,8 @@ class FixtureOut(BaseModel):
     status: str
     home_score: int | None
     away_score: int | None
-    
+    current_minute: int | None
+
 class StandingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useDashboard } from "@/context/DashboardContext";
+import { TabBar } from "@/components/common/TabBar";
 
 const TABS = [
     {key: "standings", label: "Standings"},
@@ -10,24 +11,5 @@ const TABS = [
 
 export function Ribbon(){
     const {currTab, setCurrTab} = useDashboard();
-
-    return (
-        <div className="flex gap-1 border-b border-border bg-card px-2">
-            {
-                TABS.map((tab) => (
-                    <button
-                        key={tab.key}
-                        onClick={() => setCurrTab(tab.key)}
-                        className={`-mb-px border-b-2 px-3 py-3 text-sm font-medium transition-colors ${
-                            currTab === tab.key
-                                ? "border-primary text-primary"
-                                : "border-transparent text-muted-foreground hover:text-foreground"
-                        }`}
-                    >
-                        {tab.label}
-                    </button>
-                ))
-            }
-        </div>
-    )
+    return <TabBar tabs={TABS} active={currTab} onChange={setCurrTab} />;
 }

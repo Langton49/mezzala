@@ -89,12 +89,12 @@ LEAGUES = {
         "type": "cup"
     },
 
-    # "unl": {
-    #     "bzzorio_id": 64,
-    #     "name": "UEFA Nations League",
-    #     "country": "Europe",
-    #     "type": "cup"
-    # },
+    "unl": {
+        "bzzorio_id": 64,
+        "name": "UEFA Nations League",
+        "country": "Europe",
+        "type": "cup"
+    },
 
     "uecl": {
         "bzzorio_id": 83,

@@ -1,5 +1,7 @@
 "use client";
 import { useState } from "react";
+import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
+import { EmptyState } from "@/components/common/Panel";
 import { StatCard } from "./StatCard";
 import { StatFullView } from "./StatFullView";
 
@@ -18,7 +20,10 @@ export function PlayerStatsView({ leagueId }: { leagueId: number | null }) {
   const [expanded, setExpanded] = useState<StatType | null>(null);
 
   if (leagueId === null) {
-    return <div className="p-8 text-center text-sm text-muted-foreground">Select a league to see statistics.</div>;
+    return <EmptyState>Select a league to see statistics.</EmptyState>;
+  }
+  if (leagueId === WORLD_FOOTBALL_ID) {
+    return <EmptyState>World Football doesn&apos;t have statistics — pick a specific league.</EmptyState>;
   }
 
   if (expanded) {
@@ -26,7 +31,7 @@ export function PlayerStatsView({ leagueId }: { leagueId: number | null }) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {STAT_ORDER.map((statType) => (
         <StatCard key={statType} leagueId={leagueId} statType={statType} onExpand={() => setExpanded(statType)} />
       ))}

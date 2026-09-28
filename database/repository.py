@@ -214,6 +214,7 @@ async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> 
         .where(Fixture.league_id == league_id)
         .where(Fixture.round_number == round)
         .where(Fixture.event_date >= current_season_start())
+        .order_by(Fixture.event_date.asc())
     )
     return result.scalars().all()
 
@@ -223,7 +224,8 @@ async def get_matches_by_id_date(db: AsyncSession, league_id: int, date: datetim
     result = await db.execute(select(Fixture)
                               .where(Fixture.league_id == league_id)
                               .where(Fixture.event_date >= day_start)
-                              .where(Fixture.event_date < day_end))
+                              .where(Fixture.event_date < day_end)
+                              .order_by(Fixture.event_date.asc()))
     return result.scalars().all()
 
 async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]:

@@ -11,7 +11,7 @@ export function MainView(){
     return(
         <div className="flex flex-col overflow-hidden">
             <Ribbon/>
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex-1 overflow-auto p-3">
                 {currTab === "standings" && <StandingsView leagueId={currLeague}/>}
                 {currTab === "fixtures" && <FixturesView leagueId={currLeague}/>}
                 {currTab === "stats" && <PlayerStatsView leagueId={currLeague}/>}

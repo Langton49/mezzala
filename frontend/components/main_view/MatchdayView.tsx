@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Fixture } from "@/lib/types";
+import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
+import { useJsonFetch } from "@/hooks/useJsonFetch";
+import { Panel, EmptyState } from "@/components/common/Panel";
+import { PaginatedHeader } from "@/components/common/PaginatedHeader";
 import { FixtureRow, FixtureListSkeleton } from "./FixtureRow";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 interface CurrentRound {
   stage: string;
@@ -12,70 +14,52 @@ interface CurrentRound {
 }
 
 export function MatchdayView({ leagueId }: { leagueId: number | null }) {
+  const isSelectable = leagueId !== null && leagueId !== WORLD_FOOTBALL_ID;
+
+  const { data: current } = useJsonFetch<CurrentRound>(isSelectable ? `/matches/${leagueId}/current` : null);
   const [round, setRound] = useState<number | null>(null);
-  const [stageName, setStageName] = useState<string | null>(null);
-  const [matches, setMatches] = useState<Fixture[]>([]);
-  const [loading, setLoading] = useState(false);
 
   // Resolve which round is "current" for this league before fetching any
-  // fixtures, instead of always starting from round 1.
+  // fixtures, instead of always starting from round 1 — but let Prev/Next
+  // override it locally afterward without re-resolving on every click.
   useEffect(() => {
-    if (leagueId === null) return;
-    setLoading(true);
-    setRound(null);
-    fetch(`${API_URL}/matches/${leagueId}/current`)
-      .then((res) => res.json())
-      .then((current: CurrentRound | null) => {
-        setStageName(current?.stage_name ?? null);
-        setRound(current?.round_number ?? 1);
-      })
-      .catch(() => setRound(1));
-  }, [leagueId]);
+    setRound(current?.round_number ?? (isSelectable ? 1 : null));
+  }, [current, isSelectable]);
 
-  useEffect(() => {
-    if (leagueId === null || round === null) return;
-    fetch(`${API_URL}/matches/${leagueId}/round/${round}`)
-      .then((res) => res.json())
-      .then(setMatches)
-      .catch(() => setMatches([]))
-      .finally(() => setLoading(false));
-  }, [leagueId, round]);
+  const { data: matches, loading } = useJsonFetch<Fixture[]>(
+    isSelectable && round !== null ? `/matches/${leagueId}/round/${round}` : null
+  );
 
   if (leagueId === null) {
-    return <div className="p-8 text-center text-sm text-muted-foreground">Select a league to see matchdays.</div>;
+    return <EmptyState>Select a league to see matchdays.</EmptyState>;
   }
+  if (leagueId === WORLD_FOOTBALL_ID) {
+    return <EmptyState>World Football doesn&apos;t have matchdays — pick a specific league.</EmptyState>;
+  }
+
+  // Domestic leagues only have one stage, "regular-season", and its bzzorio
+  // stage_name ("Regular season") isn't how football fans actually refer to
+  // a single round — "Matchday 5" is. Cup competitions have real, distinct
+  // stage names (Quarterfinals, League phase, Playoff round, ...) that
+  // already read correctly, so only the league case gets rewritten.
+  const roundLabel =
+    current?.stage === "regular-season" ? `Matchday ${round ?? ""}` : `${current?.stage_name ?? "Round"} ${round ?? ""}`;
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <button
-          onClick={() => setRound((r) => Math.max(1, (r ?? 1) - 1))}
-          className="rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:border-border-strong hover:bg-muted"
-        >
-          ← Previous
-        </button>
-        <span className="text-sm font-medium text-primary">
-          {stageName ?? "Round"} {round ?? ""}
-        </span>
-        <button
-          onClick={() => setRound((r) => (r ?? 1) + 1)}
-          className="rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:border-border-strong hover:bg-muted"
-        >
-          Next →
-        </button>
-      </div>
+      <PaginatedHeader
+        label={roundLabel}
+        onPrev={() => setRound((r) => Math.max(1, (r ?? 1) - 1))}
+        onNext={() => setRound((r) => (r ?? 1) + 1)}
+      />
 
-      {loading ? (
+      {loading || round === null ? (
         <FixtureListSkeleton />
       ) : (
-        <div key={`${leagueId}-${round}`} className="fixture-list-enter overflow-hidden rounded-lg border border-border bg-card">
-          {matches.length === 0 && (
-            <div className="p-8 text-center text-sm text-muted-foreground">No matches found.</div>
-          )}
-          {matches.map((m) => (
-            <FixtureRow key={m.id} fixture={m} />
-          ))}
-        </div>
+        <Panel className="fixture-list-enter" key={`${leagueId}-${round}`}>
+          {(!matches || matches.length === 0) && <EmptyState>No matches found.</EmptyState>}
+          {matches?.map((m) => <FixtureRow key={m.id} fixture={m} showDate />)}
+        </Panel>
       )}
     </div>
   );

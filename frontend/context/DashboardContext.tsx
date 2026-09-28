@@ -3,6 +3,11 @@ import { createContext, useContext, useState, ReactNode } from "react"
 
 type Tab = "standings" | "fixtures" | "stats";
 
+// Sentinel "league" selection meaning "every league at once" — used by the
+// sidebar's "World Football" row and the by-date fixture view. Real bzzorio
+// league ids are always positive, so 0 can't collide with a real one.
+export const WORLD_FOOTBALL_ID = 0;
+
 interface DashboardState {
     currLeague: number | null;
     setCurrLeague: (id: number | null) => void;

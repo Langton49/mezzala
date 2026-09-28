@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Standing } from "@/lib/types";
+import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
+import { useJsonFetch } from "@/hooks/useJsonFetch";
 import { Logo } from "@/components/common/Logo";
 import { Skeleton } from "@/components/common/Skeleton";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+import { EmptyState } from "@/components/common/Panel";
 
 // Only the "goal stats" are sortable, per the ask — position stays the
 // natural sort order everywhere else, clicking a header just re-sorts by
@@ -17,23 +18,16 @@ interface Sort {
 }
 
 export function StandingsView({ leagueId }: { leagueId: number | null }) {
-  const [standings, setStandings] = useState<Standing[]>([]);
-  const [loading, setLoading] = useState(false);
+  const isSelectable = leagueId !== null && leagueId !== WORLD_FOOTBALL_ID;
+  const { data: standingsData, loading } = useJsonFetch<Standing[]>(isSelectable ? `/standings/${leagueId}` : null);
   const [sort, setSort] = useState<Sort | null>(null);
-
-  useEffect(() => {
-    if (leagueId === null) return;
-    setLoading(true);
-    setSort(null);
-    fetch(`${API_URL}/standings/${leagueId}`)
-      .then((res) => res.json())
-      .then(setStandings)
-      .catch(() => setStandings([]))
-      .finally(() => setLoading(false));
-  }, [leagueId]);
+  const standings = standingsData ?? [];
 
   if (leagueId === null) {
-    return <div className="p-8 text-center text-sm text-muted-foreground">Select a league to see standings.</div>;
+    return <EmptyState>Select a league to see standings.</EmptyState>;
+  }
+  if (leagueId === WORLD_FOOTBALL_ID) {
+    return <EmptyState>World Football doesn&apos;t have standings — pick a specific league.</EmptyState>;
   }
 
   if (loading) {
@@ -56,7 +50,7 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
 
   return (
     <div>
-      <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="overflow-hidden rounded-md border border-border bg-card">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-xs text-muted-foreground">
@@ -74,8 +68,8 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="p-8 text-center text-sm text-muted-foreground">
-                  No standings available.
+                <td colSpan={9}>
+                  <EmptyState>No standings available.</EmptyState>
                 </td>
               </tr>
             )}
@@ -85,55 +79,121 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
           </tbody>
         </table>
       </div>
+      <ZoneLegend standings={standings} zoneColors={zoneColors} />
     </div>
   );
 }
 
-// zone_type only says the *family* a zone belongs to (qualification vs
-// relegation) — a league can have more than one zone in the same family
-// (Champions League and Europa League are both "qualification"), so those
-// need visibly different colors from each other, not just from relegation.
-// Assigned in order of first appearance in the table (i.e. by position),
-// so the highest zone in a family always gets that family's boldest shade.
+// zone_key isn't reliable — bzzorio reuses the same key ("playoff") for
+// genuinely different zones that only differ by label — so everything here
+// keys off zone_label, the one field that actually distinguishes zones.
+//
+// Colors are assigned in two passes, not by table-appearance order, because
+// appearance order doesn't track severity/desirability:
+//   1. Any zone whose label names a specific European competition (Champions
+//      League / Europa League / Conference League) gets that competition's
+//      real color, regardless of position — recognizable at a glance instead
+//      of an arbitrary shade.
+//   2. Everything else is grouped as "good outcome" (qualification/playoff/
+//      promotion zones) or "bad outcome" (relegation zones) and shaded on a
+//      gradient — but ordered by how good/bad the zone actually is, not by
+//      which one happens to sit higher in the table. A relegation *playoff*
+//      zone can appear above direct relegation (Bundesliga: playoff spot is
+//      16th, direct relegation is 17th-18th) while being the less severe of
+//      the two, so relegation zones are ordered by how deep into the table
+//      they reach (furthest down = most severe = boldest), the opposite of
+//      simple appearance order.
 interface ZoneColor {
-  border: string;
+  bg: string;
 }
-const QUALIFICATION_COLORS: ZoneColor[] = [
-  { border: "border-l-blue-700" },
-  { border: "border-l-sky-500" },
-  { border: "border-l-cyan-400" },
-  { border: "border-l-indigo-400" },
+
+const EUROPEAN_COMPETITION_COLORS: { match: string; color: ZoneColor }[] = [
+  // "Conference League" must be checked before "Europa League" would ever
+  // need to be (they don't overlap, but keeping the longer/more specific
+  // names first is the safer habit if more zone labels show up later).
+  { match: "Conference League", color: { bg: "bg-green-300" } },
+  { match: "Europa League", color: { bg: "bg-orange-300" } },
+  { match: "Champions League", color: { bg: "bg-blue-300" } },
 ];
-const RELEGATION_COLORS: ZoneColor[] = [
-  { border: "border-l-red-600" },
-  { border: "border-l-orange-500" },
+
+const GOOD_OUTCOME_GRADIENT: ZoneColor[] = [
+  { bg: "bg-blue-300" },
+  { bg: "bg-sky-300" },
+  { bg: "bg-cyan-200" },
+  { bg: "bg-indigo-200" },
 ];
-const OTHER_ZONE_COLOR: ZoneColor = { border: "border-l-zinc-400" };
+const RELEGATION_GRADIENT: ZoneColor[] = [
+  { bg: "bg-red-300" },
+  { bg: "bg-red-200" },
+];
+const OTHER_ZONE_COLOR: ZoneColor = { bg: "bg-zinc-200" };
+
+const GOOD_OUTCOME_TYPES = new Set(["qualification", "playoff", "promotion"]);
+
+interface ZoneInfo {
+  label: string;
+  type: string | null;
+  minPosition: number;
+  maxPosition: number;
+}
 
 function buildZoneColorMap(standings: Standing[]): Map<string, ZoneColor> {
-  const map = new Map<string, ZoneColor>();
-  let qualificationCount = 0;
-  let relegationCount = 0;
+  const zones = new Map<string, ZoneInfo>();
   for (const s of standings) {
-    if (!s.zone_key || map.has(s.zone_key)) continue;
-    if (s.zone_type === "qualification") {
-      map.set(s.zone_key, QUALIFICATION_COLORS[qualificationCount % QUALIFICATION_COLORS.length]);
-      qualificationCount++;
-    } else if (s.zone_type === "relegation") {
-      map.set(s.zone_key, RELEGATION_COLORS[relegationCount % RELEGATION_COLORS.length]);
-      relegationCount++;
+    if (!s.zone_label) continue;
+    const existing = zones.get(s.zone_label);
+    if (existing) {
+      existing.minPosition = Math.min(existing.minPosition, s.position);
+      existing.maxPosition = Math.max(existing.maxPosition, s.position);
     } else {
-      map.set(s.zone_key, OTHER_ZONE_COLOR);
+      zones.set(s.zone_label, {
+        label: s.zone_label,
+        type: s.zone_type,
+        minPosition: s.position,
+        maxPosition: s.position,
+      });
     }
   }
+
+  const map = new Map<string, ZoneColor>();
+  const unbranded: ZoneInfo[] = [];
+
+  for (const zone of zones.values()) {
+    const brand = EUROPEAN_COMPETITION_COLORS.find((c) => zone.label.includes(c.match));
+    if (brand) {
+      map.set(zone.label, brand.color);
+    } else {
+      unbranded.push(zone);
+    }
+  }
+
+  unbranded
+    .filter((z) => GOOD_OUTCOME_TYPES.has(z.type ?? ""))
+    .sort((a, b) => a.minPosition - b.minPosition) // best (lowest) position first
+    .forEach((zone, i) => map.set(zone.label, GOOD_OUTCOME_GRADIENT[i % GOOD_OUTCOME_GRADIENT.length]));
+
+  unbranded
+    .filter((z) => z.type === "relegation")
+    .sort((a, b) => b.maxPosition - a.maxPosition) // deepest-reaching zone first = most severe
+    .forEach((zone, i) => map.set(zone.label, RELEGATION_GRADIENT[i % RELEGATION_GRADIENT.length]));
+
+  for (const zone of unbranded) {
+    if (!map.has(zone.label)) map.set(zone.label, OTHER_ZONE_COLOR);
+  }
+
   return map;
 }
 
 function StandingRow({ standing, zoneColors }: { standing: Standing; zoneColors: Map<string, ZoneColor> }) {
-  const color = standing.zone_key ? zoneColors.get(standing.zone_key) : undefined;
+  const color = standing.zone_label ? zoneColors.get(standing.zone_label) : undefined;
+  // A plain hover:bg-muted would blank out the zone tint on hover, and
+  // brightness-95 does nothing on a row with no background at all — so
+  // zoned and unzoned rows need different hover treatments, not one shared
+  // class, to both actually show feedback.
+  const hoverClass = color ? "hover:brightness-95" : "hover:bg-muted";
   return (
     <tr
-      className={`border-b border-l-4 border-border transition-colors last:border-b-0 hover:bg-muted ${color?.border ?? "border-l-transparent"}`}
+      className={`border-b border-border transition-colors last:border-b-0 ${hoverClass} ${color?.bg ?? ""}`}
       title={standing.zone_label ?? undefined}
     >
       <td className="px-3 py-2 tabular-nums text-muted-foreground">{standing.position}</td>
@@ -151,6 +211,25 @@ function StandingRow({ standing, zoneColors }: { standing: Standing; zoneColors:
       <td className="px-2 py-2 text-center tabular-nums">{standing.gd}</td>
       <td className="px-3 py-2 text-center font-semibold tabular-nums">{standing.pts}</td>
     </tr>
+  );
+}
+
+function ZoneLegend({ standings, zoneColors }: { standings: Standing[]; zoneColors: Map<string, ZoneColor> }) {
+  const labels = new Set<string>();
+  for (const s of standings) {
+    if (s.zone_label) labels.add(s.zone_label);
+  }
+  if (labels.size === 0) return null;
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+      {[...labels].map((label) => (
+        <span key={label} className="flex items-center gap-1.5">
+          <span className={`h-2.5 w-2.5 rounded-sm border border-border-strong ${zoneColors.get(label)?.bg ?? "bg-transparent"}`} />
+          {label}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -182,7 +261,7 @@ function SortableHeader({
 
 function StandingsSkeleton() {
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
+    <div className="overflow-hidden rounded-md border border-border bg-card">
       {Array.from({ length: 12 }).map((_, i) => (
         <div key={i} className="flex items-center gap-3 border-b border-border px-4 py-2.5 last:border-b-0">
           <Skeleton className="h-3 w-4" />

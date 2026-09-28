@@ -9,32 +9,6 @@ from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
-"""
-Poller is the singleton service that fetches match info and news from external APIs. In terms of writing to DB and Redis no other service should do that
-The poller should do the following tasks:
-X) Fetch data from APIs and RSS feeds
-X) Normalize to match the expected data structure with proper labels
-3.) Compare against what exists so we know what's changed since last update. keeping the last seen in the pollers memory
-X) Upsert to postgres db
-5.) Publish to Redis for websocket updates
-"""
-test_fixture_data = {
-    "id": 999999,
-    "league_id": 1,
-    "home_team_id": 42,
-    "home_team": "Arsenal",
-    "away_team_id": 49,
-    "away_team": "Chelsea",
-    "venue_id": None,
-    "event_date": "2026-09-08T19:00:00+00:00",
-    "status": "live",
-    "home_score": 2,
-    "away_score": 1,
-    "current_minute": 58,
-    "home_score_ht": 1,
-    "away_score_ht": 1,
-    "last_updated": "2026-09-08T19:00:00+00:00"
-}
 
 redis_client = redis.Redis(
     host="localhost",
@@ -83,6 +57,8 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+            print(f"Unexpected Error")
 
 async def fetch_current_stage(league_id: int) -> list[dict]:
     try:
@@ -100,8 +76,10 @@ async def fetch_current_stage(league_id: int) -> list[dict]:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+            print(f"Unexpected Error")
 
-async def fetch_fixtures_by_id(league_id: int, round: int, comp: str) -> list[Fixture]:
+async def fetch_fixtures_by_id(league_id: int, round: int) -> list[Fixture]:
     """Fetch upcoming league fixtures by league id
 
     Args:
@@ -119,6 +97,8 @@ async def fetch_fixtures_by_id(league_id: int, round: int, comp: str) -> list[Fi
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+            print(f"Unexpected Error")
 
 async def fetch_fixtures_by_date(date: datetime):
     day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
@@ -137,6 +117,8 @@ async def fetch_fixtures_by_date(date: datetime):
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+            print(f"Unexpected Error")
         
 async def fetch_fixture(fixture_id: int) -> Fixture:
     """Fetch individual fixture by its id
@@ -156,6 +138,8 @@ async def fetch_fixture(fixture_id: int) -> Fixture:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+        print(f"Unexpected Error")
     
 async def fetch_standings(league_id: int) -> list[dict]:
     """Fetch the league table for a given leagues id
@@ -181,7 +165,13 @@ async def fetch_standings(league_id: int) -> list[dict]:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
-        
+    except (KeyError, TypeError) as e:
+        # Some competitions (e.g. national-team competitions like the
+        # Nations League) don't return a flat 'standings' list at all — this
+        # keeps that failure contained to this one function, matching every
+        # other fetch_* here, rather than relying on the caller to catch it.
+        print(f"Unexpected standings response shape for league {league_id}: {e}")
+
 async def fetch_stat(league_id: int) -> list[dict]:
     """Fetch specified stat `stat` from the API for the given league id
 
@@ -210,6 +200,8 @@ async def fetch_stat(league_id: int) -> list[dict]:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+            print(f"Unexpected Error")
 
 async def poll_live_fixtures():
     async with asyncio.TaskGroup() as tg:
@@ -238,29 +230,41 @@ async def poll_upcoming_matches():
     async with async_session() as db:
         print(f"Daily poll for upcoming matches")
         for fx in fixtures:
-            await upsert_fixture(db, orm_to_dict(fx))
+            try:
+                await upsert_fixture(db, orm_to_dict(fx))
+            except Exception:
+                print(f"Unexpected Error")
                 
 async def poll_stages():
     print("Daily poll for stages")
     async with async_session() as db:
         for details in LEAGUES.values():
-            stages = await fetch_current_stage(details['bzzorio_id'])
-            for stage in stages:
-                await upsert_stage(db, stage)
+            try:
+                stages = await fetch_current_stage(details['bzzorio_id'])
+                for stage in stages:
+                    await upsert_stage(db, stage)
+            except Exception:
+                print(f"Error trying to poll for league with id {details['bzzorio_id']}")
                 
 async def poll_standings():
     print("Daily poll for league standings")
     async with async_session() as db:
         for details in LEAGUES.values():
-            standings = await fetch_standings(details['bzzorio_id'])
-            await upsert_standings(db, standings)
+            try:
+                standings = await fetch_standings(details['bzzorio_id'])
+                await upsert_standings(db, standings)
+            except Exception:
+                print(f"Error trying to poll for league with id {details['bzzorio_id']}")
             
 async def poll_stat():
     print("Daily poll for stats")
     async with async_session() as db:
         for details in LEAGUES.values():
-            stats = await fetch_stat(details['bzzorio_id'])
-            await upsert_stat(db, stats)
+            try:
+                stats = await fetch_stat(details['bzzorio_id'])
+                await upsert_stat(db, stats)
+            except Exception:
+                print(f"Unexpected Error")
     print('Stat poll done')
 
 async def main():
@@ -277,7 +281,6 @@ async def main():
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
-    
     
 if __name__ == "__main__":
     asyncio.run(main())

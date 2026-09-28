@@ -17,9 +17,9 @@ function positionLabel(code: string | null): string | null {
 export function PlayerStatRow({ stat, valueLabel }: { stat: PlayerStat; valueLabel: string }) {
   const position = positionLabel(stat.player_position);
   return (
-    <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 transition-colors last:border-b-0 hover:bg-muted">
-      <span className="w-5 shrink-0 text-sm tabular-nums text-muted-foreground">{stat.rank}</span>
-      <Logo id={stat.player_id} kind="player" alt={stat.player_name} size={28} />
+    <div className="flex items-center gap-2.5 border-b border-border px-3 py-2 transition-colors last:border-b-0 hover:bg-muted">
+      <span className="w-4 shrink-0 text-sm tabular-nums text-muted-foreground">{stat.rank}</span>
+      <Logo id={stat.player_id} kind="player" alt={stat.player_name} size={24} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{stat.player_name}</div>
         <div className="truncate text-xs text-muted-foreground">
@@ -37,9 +37,9 @@ export function PlayerStatRow({ stat, valueLabel }: { stat: PlayerStat; valueLab
 
 export function PlayerStatRowSkeleton() {
   return (
-    <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 last:border-b-0">
+    <div className="flex items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0">
       <Skeleton className="h-3 w-4" />
-      <Skeleton className="h-7 w-7 rounded-full" />
+      <Skeleton className="h-6 w-6 rounded-full" />
       <div className="flex-1 space-y-1.5">
         <Skeleton className="h-3 w-28" />
         <Skeleton className="h-2.5 w-20" />
