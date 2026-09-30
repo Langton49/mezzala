@@ -87,9 +87,7 @@ async def poll_live_fixtures():
                     )
                     if fx["status"] == "finished" and previous_status != "finished":
                         league_id = fx["league_id"]
-                        asyncio.create_task(poll_stages(league_id))
-                        asyncio.create_task(poll_standings(league_id))
-                        asyncio.create_task(poll_stat(league_id))
+                        asyncio.create_task(poll_stages_then_stats(league_id))
 
 # POLL CURRENT COMPETITION STAGES
 async def fetch_current_stage(league_id: int) -> list[dict]:
@@ -351,6 +349,18 @@ async def poll_stat(league_id: int | None = None):
         await upsert_stat(db, player_stats)
     print('Stats poll complete')
 
+async def poll_stages_then_stats(league_id: int | None = None):
+    """poll_standings/poll_stat both look up comp_stages (via get_current_stage)
+    to resolve a season id — they need poll_stages to have actually finished
+    writing that league's stage(s) first, not just be running concurrently
+    with it. Firing all three as independent tasks races them: on a database
+    that already has stage rows (any long-running local dev DB) the race is
+    invisible, but on a genuinely empty one (a fresh deploy) poll_stages
+    hasn't written anything yet and the other two reliably lose."""
+    await poll_stages(league_id)
+    asyncio.create_task(poll_standings(league_id))
+    asyncio.create_task(poll_stat(league_id))
+
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=30, id="live_fixtures")
@@ -358,9 +368,7 @@ async def main():
     scheduler.start()
 
     asyncio.create_task(poll_seed_missing_seasons())
-    asyncio.create_task(poll_stages())
-    asyncio.create_task(poll_standings())
-    asyncio.create_task(poll_stat())
+    asyncio.create_task(poll_stages_then_stats())
 
     print("POLLER UP")
     try:
