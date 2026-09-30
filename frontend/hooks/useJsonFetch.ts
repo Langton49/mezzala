@@ -19,9 +19,10 @@ const SKELETON_DELAY_MS = 150;
 // show a live match (current_minute changes every few seconds server-side)
 // stay current without the user having to navigate away and back. Callers
 // that don't pass it keep the original fetch-once-per-path behavior.
-export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T | null; loading: boolean } {
+export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T | null; loading: boolean; error: boolean } {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(path !== null);
+  const [error, setError] = useState(false);
   // Kept out of the effect's dependency array on purpose — this only needs
   // to reflect whatever was on screen the instant a path change starts, not
   // retrigger the effect on every subsequent setData.
@@ -35,6 +36,7 @@ export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T
     if (path === null) {
       setData(null);
       setLoading(false);
+      setError(false);
       return;
     }
     let cancelled = false;
@@ -59,12 +61,25 @@ export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T
         }
       }
       fetch(`${API_URL}${path}`)
-        .then((res) => res.json())
+        .then((res) => {
+          // A non-2xx response (e.g. the backend 500ing) still has a JSON
+          // body in FastAPI's case — treating that as real data would hand
+          // an error object to callers expecting an array and crash at
+          // render time instead of surfacing a clean error state here.
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
         .then((json) => {
-          if (!cancelled) setData(json);
+          if (!cancelled) {
+            setData(json);
+            setError(false);
+          }
         })
         .catch(() => {
-          if (!cancelled) setData(null);
+          // Deliberately not clearing `data` here — a transient failure on
+          // a background poll shouldn't blank out a perfectly good list
+          // that's already on screen, only flag that this refresh failed.
+          if (!cancelled) setError(true);
         })
         .finally(() => {
           if (loadingTimer) clearTimeout(loadingTimer);
@@ -83,5 +98,5 @@ export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T
     };
   }, [path, pollMs]);
 
-  return { data, loading };
+  return { data, loading, error };
 }

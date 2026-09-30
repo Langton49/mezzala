@@ -8,3 +8,10 @@ export function Panel({ children, className = "" }: { children: React.ReactNode;
 export function EmptyState({ children }: { children: React.ReactNode }) {
   return <div className="p-6 text-center text-sm text-muted-foreground">{children}</div>;
 }
+
+// Distinct from EmptyState on purpose — "the backend didn't respond" and
+// "this genuinely has nothing in it" need to look different, or a real
+// outage reads exactly like an empty league with no way to tell them apart.
+export function ErrorState({ children }: { children: React.ReactNode }) {
+  return <div className="p-6 text-center text-sm text-live">{children}</div>;
+}

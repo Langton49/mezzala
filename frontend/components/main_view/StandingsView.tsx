@@ -5,21 +5,37 @@ import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
 import { useJsonFetch } from "@/hooks/useJsonFetch";
 import { Logo } from "@/components/common/Logo";
 import { Skeleton } from "@/components/common/Skeleton";
-import { EmptyState } from "@/components/common/Panel";
+import { EmptyState, ErrorState } from "@/components/common/Panel";
 
-// Only the "goal stats" are sortable, per the ask — position stays the
-// natural sort order everywhere else, clicking a header just re-sorts by
-// that stat instead of replacing the standings' own ordering permanently.
-type SortKey = "gf" | "ga" | "gd";
+// Every column but Pts is sortable — clicking a header re-sorts by that
+// stat instead of replacing the standings' own ordering permanently; a
+// third click (or picking the currently-natural direction again) resets
+// back to the table's real position order, which is what "no sort active"
+// always falls back to.
+type SortKey = "position" | "team_name" | "won" | "drawn" | "lost" | "gf" | "ga" | "gd";
 type SortDir = "asc" | "desc";
 interface Sort {
   key: SortKey;
   dir: SortDir;
 }
 
+// Numeric columns default to "biggest first" on the first click; Team is
+// the one text column and defaults to A→Z instead, since "Z→A first" isn't
+// what anyone reaches for when they click a name header.
+function defaultDir(key: SortKey): SortDir {
+  return key === "team_name" ? "asc" : "desc";
+}
+
+function compareStandings(a: Standing, b: Standing, sort: Sort): number {
+  const aVal = a[sort.key];
+  const bVal = b[sort.key];
+  const cmp = typeof aVal === "string" && typeof bVal === "string" ? aVal.localeCompare(bVal) : (aVal as number) - (bVal as number);
+  return sort.dir === "asc" ? cmp : -cmp;
+}
+
 export function StandingsView({ leagueId }: { leagueId: number | null }) {
   const isSelectable = leagueId !== null && leagueId !== WORLD_FOOTBALL_ID;
-  const { data: standingsData, loading } = useJsonFetch<Standing[]>(isSelectable ? `/standings/${leagueId}` : null);
+  const { data: standingsData, loading, error } = useJsonFetch<Standing[]>(isSelectable ? `/standings/${leagueId}` : null);
   const [sort, setSort] = useState<Sort | null>(null);
   const standings = standingsData ?? [];
 
@@ -36,15 +52,13 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
 
   function toggleSort(key: SortKey) {
     setSort((prev) => {
-      if (!prev || prev.key !== key) return { key, dir: "desc" };
-      if (prev.dir === "desc") return { key, dir: "asc" };
+      if (!prev || prev.key !== key) return { key, dir: defaultDir(key) };
+      if (prev.dir === defaultDir(key)) return { key, dir: defaultDir(key) === "asc" ? "desc" : "asc" };
       return null; // third click: back to the table's natural position order
     });
   }
 
-  const rows = sort
-    ? [...standings].sort((a, b) => (sort.dir === "asc" ? a[sort.key] - b[sort.key] : b[sort.key] - a[sort.key]))
-    : standings;
+  const rows = sort ? [...standings].sort((a, b) => compareStandings(a, b, sort)) : standings;
 
   const zoneColors = buildZoneColorMap(standings);
 
@@ -54,11 +68,11 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-xs text-muted-foreground">
-              <th className="w-8 px-3 py-2 text-left font-medium">#</th>
-              <th className="px-3 py-2 text-left font-medium">Team</th>
-              <th className="w-8 px-2 py-2 text-center font-medium">W</th>
-              <th className="w-8 px-2 py-2 text-center font-medium">D</th>
-              <th className="w-8 px-2 py-2 text-center font-medium">L</th>
+              <SortableHeader label="#" sortKey="position" sort={sort} onSort={toggleSort} align="left" className="w-8 px-3" />
+              <SortableHeader label="Team" sortKey="team_name" sort={sort} onSort={toggleSort} align="left" className="px-3" />
+              <SortableHeader label="W" sortKey="won" sort={sort} onSort={toggleSort} className="w-8 px-2" />
+              <SortableHeader label="D" sortKey="drawn" sort={sort} onSort={toggleSort} className="w-8 px-2" />
+              <SortableHeader label="L" sortKey="lost" sort={sort} onSort={toggleSort} className="w-8 px-2" />
               <SortableHeader label="GF" sortKey="gf" sort={sort} onSort={toggleSort} />
               <SortableHeader label="GA" sortKey="ga" sort={sort} onSort={toggleSort} />
               <SortableHeader label="GD" sortKey="gd" sort={sort} onSort={toggleSort} />
@@ -69,7 +83,11 @@ export function StandingsView({ leagueId }: { leagueId: number | null }) {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={9}>
-                  <EmptyState>No standings available.</EmptyState>
+                  {error ? (
+                    <ErrorState>Couldn&apos;t load standings — try again shortly.</ErrorState>
+                  ) : (
+                    <EmptyState>No standings available.</EmptyState>
+                  )}
                 </td>
               </tr>
             )}
@@ -238,15 +256,19 @@ function SortableHeader({
   sortKey,
   sort,
   onSort,
+  align = "center",
+  className = "w-10 px-2",
 }: {
   label: string;
   sortKey: SortKey;
   sort: Sort | null;
   onSort: (key: SortKey) => void;
+  align?: "left" | "center";
+  className?: string;
 }) {
   const active = sort?.key === sortKey;
   return (
-    <th className="w-10 px-2 py-2 text-center font-medium">
+    <th className={`py-2 font-medium ${align === "left" ? "text-left" : "text-center"} ${className}`}>
       <button
         onClick={() => onSort(sortKey)}
         className={`inline-flex items-center gap-0.5 transition-colors hover:text-foreground ${active ? "text-primary" : ""}`}
