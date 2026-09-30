@@ -13,8 +13,6 @@ interface DashboardState {
     setCurrLeague: (id: number | null) => void;
     currTab: Tab;
     setCurrTab: (tab: Tab) => void;
-    sidebarCollapsed: boolean;
-    toggleSidebar: ()=>void;
 }
 
 const DashboardContext = createContext<DashboardState | null>(null);
@@ -22,7 +20,6 @@ const DashboardContext = createContext<DashboardState | null>(null);
 export function DashboardProvider({children}: {children: ReactNode}){
     const [currLeague, setCurrLeague] = useState<number | null>(null);
     const [currTab, setCurrTab] = useState<Tab>("fixtures");
-    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
     return (
         <DashboardContext.Provider value={{
@@ -30,8 +27,6 @@ export function DashboardProvider({children}: {children: ReactNode}){
             setCurrLeague,
             currTab,
             setCurrTab,
-            sidebarCollapsed,
-            toggleSidebar: () => setSidebarCollapsed((prev) => !prev)
         }} >
             {children}
         </DashboardContext.Provider>

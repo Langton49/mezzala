@@ -10,11 +10,13 @@ export function MainView(){
 
     return(
         <div className="flex flex-col overflow-hidden">
-            <Ribbon/>
-            <div className="flex-1 overflow-auto p-3">
-                {currTab === "standings" && <StandingsView leagueId={currLeague}/>}
-                {currTab === "fixtures" && <FixturesView leagueId={currLeague}/>}
-                {currTab === "stats" && <PlayerStatsView leagueId={currLeague}/>}
+            <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden">
+                <Ribbon/>
+                <div className="flex-1 overflow-auto p-3">
+                    {currTab === "standings" && <StandingsView leagueId={currLeague}/>}
+                    {currTab === "fixtures" && <FixturesView leagueId={currLeague}/>}
+                    {currTab === "stats" && <PlayerStatsView leagueId={currLeague}/>}
+                </div>
             </div>
         </div>
     )

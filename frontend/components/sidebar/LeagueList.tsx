@@ -21,18 +21,11 @@ const PLACEHOLDER_LEAGUES = [
     {id:64, name: "UEFA Nations League"},
 ]
 
-export function LeagueList({ collapsed = false }: { collapsed?: boolean }){
+export function LeagueList(){
     const {currLeague, setCurrLeague} = useDashboard();
 
-    // border-l-2 stays present in both collapsed and expanded layouts (just
-    // transparent when inactive) so toggling `collapsed` only changes
-    // justification/padding/text visibility, never which CSS properties
-    // exist on the element — otherwise the border popping in from nothing
-    // reads as every row flashing at once when the sidebar expands.
     function itemClass(active: boolean) {
-        return `flex w-full items-center rounded-md border-l-2 py-2 transition-colors ${
-            collapsed ? "justify-center px-1" : "gap-2.5 px-2.5 text-left text-sm"
-        } ${
+        return `flex w-full items-center gap-2.5 rounded-md border-l-2 px-2.5 py-2 text-left text-sm transition-colors ${
             active
                 ? "border-primary bg-muted font-medium text-primary"
                 : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -40,7 +33,7 @@ export function LeagueList({ collapsed = false }: { collapsed?: boolean }){
     }
 
     return (
-        <ul className={`flex flex-col gap-0.5 ${collapsed ? "px-1" : "px-2"}`}>
+        <ul className="flex flex-col gap-0.5 px-2">
             <li key="world-football">
                 <button
                     onClick={() => setCurrLeague(WORLD_FOOTBALL_ID)}
@@ -48,7 +41,7 @@ export function LeagueList({ collapsed = false }: { collapsed?: boolean }){
                     className={itemClass(currLeague === WORLD_FOOTBALL_ID)}
                 >
                     <GlobeIcon size={18} />
-                    {!collapsed && <span className="truncate">World Football</span>}
+                    <span className="truncate">World Football</span>
                 </button>
             </li>
             <li key="sidebar-divider" className="my-1 border-t border-border" aria-hidden="true" />
@@ -63,7 +56,7 @@ export function LeagueList({ collapsed = false }: { collapsed?: boolean }){
                                 className={itemClass(active)}
                             >
                                 <Logo id={league.id} kind="league" alt={league.name} size={18} />
-                                {!collapsed && <span className="truncate">{league.name}</span>}
+                                <span className="truncate">{league.name}</span>
                             </button>
                         </li>
                     );
