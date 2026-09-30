@@ -1,9 +1,8 @@
 import httpx
-import redis
+import redis.asyncio as redis
 import json
 from config.settings import settings
 from config.leagues import LEAGUES
-from database.tables import Fixture
 from database.repository import upsert_fixtures, upsert_stat, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
@@ -11,11 +10,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 
 # CONFIGS
-redis_client = redis.Redis(
-    host="localhost",
-    port=6379,
-    decode_responses=True
-)
+# Async + settings.redis_url (not a hardcoded localhost sync client) — this
+# has to match backend/app/redis_listener.py's connection or the poller
+# publishes into a Redis instance nothing is actually subscribed to in any
+# non-local deployment, and a sync client here would block the poller's
+# event loop on every publish.
+redis_client = redis.from_url(settings.redis_url)
 
 LIVE_MATCHES_STORE: dict[int, tuple] = {}
 
@@ -40,14 +40,14 @@ def matches_changed(fixture_id: int, fixture_data: dict) -> bool:
     return True
 
 # POLL LIVE FIXTURES
-async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
+async def fetch_live_fixtures(league_id: int) -> list[dict]:
     """Fetch live fixtures from individual leagues by league id
 
     Args:
         league_id (int): League id from API
 
     Returns:
-        list[Fixture]: List of Fixture objects
+        list[dict]: List of fixture dicts (from transform_fixture), not ORM objects
     """
     if not league_id:
         return []
@@ -81,7 +81,7 @@ async def poll_live_fixtures():
             for fx in league_fixtures:
                 previous_status = LIVE_MATCHES_STORE.get(fx["id"], (None,))[0]
                 if matches_changed(fx["id"], fx):
-                    redis_client.publish(
+                    await redis_client.publish(
                         "match-updates",
                         json.dumps(fx, default=str)
                     )

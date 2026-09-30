@@ -5,4 +5,3 @@ __pycache__/
 .vscode/
 *.egg-info/
 node_modules/
-migrations/

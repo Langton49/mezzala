@@ -3,7 +3,6 @@ import json
 from config import settings
 from backend.app.connection_manager import manager
 
-
 async def redis_listener():
     client = redis.from_url(settings.redis_url)
     pubsub = client.pubsub()

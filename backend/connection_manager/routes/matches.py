@@ -5,7 +5,7 @@ from uuid import uuid4
 from database.database import get_session
 from database.repository import get_matches_by_round, get_matches_by_id_date, get_matches_by_date, get_current_round
 from backend.types.types import FixtureOut
-from datetime import datetime
+from datetime import date as DateParam
 
 matches_routes = APIRouter()
 
@@ -19,18 +19,21 @@ async def live_scores(ws: WebSocket, leagues: str = ""):
     except:
         manager.disconnect(conn_id)
 
+# league_id/round/date are typed directly (int/date) rather than parsed by
+# hand inside the body — FastAPI validates them itself and returns a clean
+# 422 on bad input instead of an unhandled ValueError turning into a 500.
 @matches_routes.get("/matches/{league_id}/round/{round}", response_model=list[FixtureOut])
-async def get_round_matches(league_id: str, round: int, db: AsyncSession = Depends(get_session)):
-    return await get_matches_by_round(db, int(league_id), round)
+async def get_round_matches(league_id: int, round: int, db: AsyncSession = Depends(get_session)):
+    return await get_matches_by_round(db, league_id, round)
 
 @matches_routes.get("/matches/{league_id}/date/{date}", response_model=list[FixtureOut])
-async def get_id_date_matches(league_id: str, date: str, db: AsyncSession = Depends(get_session)):
-    return await get_matches_by_id_date(db, int(league_id), datetime.fromisoformat(date))
-        
+async def get_id_date_matches(league_id: int, date: DateParam, db: AsyncSession = Depends(get_session)):
+    return await get_matches_by_id_date(db, league_id, date)
+
 @matches_routes.get("/matches/date/{date}", response_model=list[FixtureOut])
-async def get_date_matches(date: str, db: AsyncSession = Depends(get_session)):
-    return await get_matches_by_date(db, datetime.fromisoformat(date))
+async def get_date_matches(date: DateParam, db: AsyncSession = Depends(get_session)):
+    return await get_matches_by_date(db, date)
 
 @matches_routes.get("/matches/{league_id}/current")
-async def get_current_league_round(league_id: str, db: AsyncSession = Depends(get_session)):
-    return await get_current_round(db, int(league_id))
+async def get_current_league_round(league_id: int, db: AsyncSession = Depends(get_session)):
+    return await get_current_round(db, league_id)
