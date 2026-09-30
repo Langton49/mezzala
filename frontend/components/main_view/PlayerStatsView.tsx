@@ -31,7 +31,7 @@ export function PlayerStatsView({ leagueId }: { leagueId: number | null }) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+    <div className="flex flex-col gap-3">
       {STAT_ORDER.map((statType) => (
         <StatCard key={statType} leagueId={leagueId} statType={statType} onExpand={() => setExpanded(statType)} />
       ))}
