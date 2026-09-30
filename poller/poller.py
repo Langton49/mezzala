@@ -353,7 +353,7 @@ async def poll_stat(league_id: int | None = None):
 
 async def main():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
+    scheduler.add_job(poll_live_fixtures, "interval", seconds=30, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
     scheduler.start()
 
