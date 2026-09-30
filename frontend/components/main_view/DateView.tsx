@@ -1,9 +1,12 @@
 "use client";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Fixture } from "@/lib/types";
 import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
 import { useJsonFetch } from "@/hooks/useJsonFetch";
-import { Panel, EmptyState } from "@/components/common/Panel";
+import { useLiveMergedFixtures } from "@/hooks/useLiveUpdates";
+import { useUrlParamSetter } from "@/hooks/useUrlParam";
+import { Panel, EmptyState, ErrorState } from "@/components/common/Panel";
 import { PaginatedHeader } from "@/components/common/PaginatedHeader";
 import { FixtureRow, FixtureListSkeleton } from "./FixtureRow";
 
@@ -23,9 +26,35 @@ function formatDisplayDate(date: Date): string {
   return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
+// Inverse of toDateParam — also built from explicit y/m/d components rather
+// than handed straight to `new Date(...)`, which treats a bare "YYYY-MM-DD"
+// string as UTC midnight and would shift the displayed day back by one for
+// any timezone behind UTC.
+function parseDateParam(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const [, y, m, d] = match;
+  return new Date(Number(y), Number(m) - 1, Number(d));
+}
+
 export function DateView({ leagueId }: { leagueId: number | null }) {
-  const [date, setDate] = useState(() => new Date());
+  const searchParams = useSearchParams();
+  const setUrlParam = useUrlParamSetter();
+  const [date, setDateState] = useState(() => {
+    const raw = searchParams.get("date");
+    return (raw && parseDateParam(raw)) || new Date();
+  });
   const dateParam = toDateParam(date);
+
+  // Computed from `date` directly rather than via setDateState's
+  // functional-updater form — React can invoke that updater during render,
+  // and setUrlParam's router.replace is a side effect that isn't allowed to
+  // live inside it.
+  function setDate(updater: (d: Date) => Date) {
+    const next = updater(date);
+    setDateState(next);
+    setUrlParam("date", toDateParam(next));
+  }
 
   const path =
     leagueId === null
@@ -35,7 +64,8 @@ export function DateView({ leagueId }: { leagueId: number | null }) {
         : `/matches/${leagueId}/date/${dateParam}`;
   // Polled so a live match's current_minute keeps advancing without the
   // user having to shift days and back to force a re-fetch.
-  const { data: matches, loading } = useJsonFetch<Fixture[]>(path, 20000);
+  const { data: matches, loading, error } = useJsonFetch<Fixture[]>(path, 20000);
+  const liveMatches = useLiveMergedFixtures(matches);
 
   if (leagueId === null) {
     return <EmptyState>Select a league, or World Football, to see fixtures.</EmptyState>;
@@ -57,8 +87,9 @@ export function DateView({ leagueId }: { leagueId: number | null }) {
         <FixtureListSkeleton />
       ) : (
         <Panel className="fixture-list-enter" key={dateParam}>
-          {(!matches || matches.length === 0) && <EmptyState>No matches found.</EmptyState>}
-          {matches?.map((m) => <FixtureRow key={m.id} fixture={m} />)}
+          {(!liveMatches || liveMatches.length === 0) &&
+            (error ? <ErrorState>Couldn&apos;t load matches — try again shortly.</ErrorState> : <EmptyState>No matches found.</EmptyState>)}
+          {liveMatches?.map((m) => <FixtureRow key={m.id} fixture={m} />)}
         </Panel>
       )}
     </div>

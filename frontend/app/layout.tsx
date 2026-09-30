@@ -1,4 +1,5 @@
 import "./globals.css";
+import { Suspense } from "react";
 import { Space_Grotesk } from "next/font/google";
 import { DashboardProvider } from "@/context/DashboardContext";
 
@@ -12,9 +13,13 @@ export default function RootLayout({children}: {children: React.ReactNode}){
   return (
     <html lang="en" className={display.variable}>
       <body>
-        <DashboardProvider>
-          {children}
-        </DashboardProvider>
+        {/* DashboardProvider reads the URL via useSearchParams(), which Next.js
+            requires a Suspense boundary for on a statically-prerendered page. */}
+        <Suspense>
+          <DashboardProvider>
+            {children}
+          </DashboardProvider>
+        </Suspense>
       </body>
     </html>
   )
