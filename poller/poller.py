@@ -357,10 +357,7 @@ async def main():
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
     scheduler.start()
 
-    # One-time-per-league backfill — only does anything for a league with no
-    # current-season fixtures yet (fresh DB, new season, newly added league).
     asyncio.create_task(poll_seed_missing_seasons())
-
     asyncio.create_task(poll_stages())
     asyncio.create_task(poll_standings())
     asyncio.create_task(poll_stat())
