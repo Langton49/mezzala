@@ -34,6 +34,10 @@ export function useJsonFetch<T>(path: string | null, pollMs?: number): { data: T
 
   useEffect(() => {
     if (path === null) {
+      // Synchronizing local state with the `path` prop going null (not a
+      // response arriving) — an intentional reset, not the "derive state
+      // from a subscription callback" case this rule is meant to catch.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setData(null);
       setLoading(false);
       setError(false);

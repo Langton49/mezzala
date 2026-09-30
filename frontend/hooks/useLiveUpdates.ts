@@ -76,6 +76,9 @@ export function useLiveMergedFixtures(matches: Fixture[] | null): Fixture[] | nu
   const [merged, setMerged] = useState<Fixture[] | null>(matches);
 
   useEffect(() => {
+    // Synchronizing local state with the `matches` prop, not deriving state
+    // from a subscription callback — the rule's concern doesn't apply here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMerged(matches);
   }, [matches]);
 
