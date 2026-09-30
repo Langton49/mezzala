@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, News, Team, CompetitionStages, Standing, PlayerStat
+from .tables import Fixture, CompetitionStages, Standing, PlayerStat
 from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
@@ -104,6 +104,18 @@ def current_season_start() -> datetime:
     now = datetime.now(timezone.utc)
     year = now.year if now.month >= 7 else now.year - 1
     return datetime(year, 7, 1, tzinfo=timezone.utc)
+
+async def has_fixtures_for_season(db: AsyncSession, league_id: int) -> bool:
+    """Whether any fixture is already stored for this league's current season —
+    the guard that keeps the full-season backfill a one-time-per-season thing
+    instead of something that redoes itself on every poller restart."""
+    result = await db.execute(
+        select(Fixture.id)
+        .where(Fixture.league_id == league_id)
+        .where(Fixture.event_date >= current_season_start())
+        .limit(1)
+    )
+    return result.scalar() is not None
 
 async def get_current_stage(db: AsyncSession, league_id: int) -> CompetitionStages | None:
     now = datetime.now(timezone.utc)
@@ -219,9 +231,6 @@ async def upsert_stat(db: AsyncSession, stats: list[dict]):
         )
         await db.execute(statement)
         await db.commit()
-        
-async def upsert_batch(db: AsyncSession, fixtures: list[dict]):
-    await upsert_fixtures(db, fixtures)
 
 # ENDPOINT FUNCTIONS
 async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:

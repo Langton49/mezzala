@@ -4,7 +4,7 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixtures, upsert_stat, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings
+from database.repository import upsert_fixtures, upsert_stat, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -71,19 +71,25 @@ async def poll_live_fixtures():
     async with asyncio.TaskGroup() as tg:
         requests = [tg.create_task(fetch_live_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
         
-    async with async_session() as db: 
+    async with async_session() as db:
         for response in requests:
             league_fixtures = response.result()
             if not league_fixtures:
                 continue
-            
+
             await upsert_fixtures(db, league_fixtures)
             for fx in league_fixtures:
-                if matches_changed(fx.id, fx):
+                previous_status = LIVE_MATCHES_STORE.get(fx["id"], (None,))[0]
+                if matches_changed(fx["id"], fx):
                     redis_client.publish(
                         "match-updates",
                         json.dumps(fx, default=str)
                     )
+                    if fx["status"] == "finished" and previous_status != "finished":
+                        league_id = fx["league_id"]
+                        asyncio.create_task(poll_stages(league_id))
+                        asyncio.create_task(poll_standings(league_id))
+                        asyncio.create_task(poll_stat(league_id))
 
 # POLL CURRENT COMPETITION STAGES
 async def fetch_current_stage(league_id: int) -> list[dict]:
@@ -117,12 +123,14 @@ async def fetch_current_stage(league_id: int) -> list[dict]:
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
             
-async def poll_stages():
-    """A daily poll to check the current stage for each competition in LEAGUES
+async def poll_stages(league_id: int | None = None):
+    """Check the current stage for each competition in LEAGUES, or just one
+    league when triggered off a finished match.
     """
     print("Starting stages poll...")
+    league_ids = [league_id] if league_id is not None else [details.get("bzzorio_id") for details in LEAGUES.values()]
     async with asyncio.TaskGroup() as tg:
-        requests = [tg.create_task(fetch_current_stage(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        requests = [tg.create_task(fetch_current_stage(lid)) for lid in league_ids]
             
     curr_stages = []
     async with async_session() as db:
@@ -187,7 +195,56 @@ async def poll_upcoming_matches():
         await upsert_fixtures(db, upcoming_fixtures)
             
     print("Upcoming matches poll complete")
-    
+
+# SEED A LEAGUE'S FULL CURRENT SEASON (one-time per league, guarded — see poll_seed_missing_seasons)
+async def seed_league_fixtures(league_id: int):
+    """Backfill every fixture for a league's current season. Only meant to be
+    called for a league that has none yet — poll_upcoming_matches only ever
+    covers a rolling 7-day window, so without this a fresh DB (or a league
+    just added to LEAGUES) would never get its past/full-season fixtures.
+    """
+    if not league_id:
+        return
+    try:
+        season_fixtures = []
+        fixtures_request = await client.get(f"events/", params={"league_id": league_id, "status": "upcoming", "date_from": current_season_start().strftime("%Y-%m-%d"), "limit": 10})
+        fixtures_request.raise_for_status()
+
+        while fixtures_request.status_code == 200:
+            season_fixtures.extend([transform_fixture(fx) for fx in fixtures_request.json()["results"]])
+            next_url = fixtures_request.json().get("next")
+            if not next_url:
+                break
+            fixtures_request = await client.get(next_url)
+
+        async with async_session() as db:
+            await upsert_fixtures(db, season_fixtures)
+        print(f"Seeded {len(season_fixtures)} fixtures for league {league_id}")
+    except httpx.HTTPStatusError as e:
+        print(f"API returned HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        print(f"Request failed: {e}")
+    except (KeyError, TypeError) as e:
+        print(f"Unexpected Error")
+
+async def poll_seed_missing_seasons():
+    """Backfills the full current season for any league that has nothing in
+    the DB yet — a fresh DB, a new season, or a league just added to LEAGUES —
+    and does nothing otherwise. Guarded so restarting the poller never
+    re-triggers a full-season fetch for leagues that are already seeded.
+    """
+    league_ids = [details.get("bzzorio_id") for details in LEAGUES.values() if details.get("bzzorio_id")]
+    async with async_session() as db:
+        needs_seed = [lid for lid in league_ids if not await has_fixtures_for_season(db, lid)]
+
+    if not needs_seed:
+        return
+
+    print(f"Seeding fixtures for leagues with no current-season data: {needs_seed}")
+    async with asyncio.TaskGroup() as tg:
+        for league_id in needs_seed:
+            tg.create_task(seed_league_fixtures(league_id))
+
 # POLL LEAGUE STANDINGS FOR ALL COMPS
 async def fetch_standings(league_id: int) -> list[dict]:
     """Fetch the league table for a given league's id
@@ -221,10 +278,14 @@ async def fetch_standings(league_id: int) -> list[dict]:
         # other fetch_* here, rather than relying on the caller to catch it.
         print(f"Unexpected standings response shape for league {league_id}: {e}")
         
-async def poll_standings():
+async def poll_standings(league_id: int | None = None):
+    """Poll standings for every competition in LEAGUES, or just one league
+    when triggered off a finished match.
+    """
     print("Starting standings poll...")
+    league_ids = [league_id] if league_id is not None else [details.get("bzzorio_id") for details in LEAGUES.values()]
     async with asyncio.TaskGroup() as tg:
-        requests = [tg.create_task(fetch_standings(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        requests = [tg.create_task(fetch_standings(lid)) for lid in league_ids]
     
     league_standings = []
     async with async_session() as db:
@@ -270,12 +331,14 @@ async def fetch_stat(league_id: int) -> list[dict]:
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
             
-async def poll_stat():
-    """Poll player stats across all competitions
+async def poll_stat(league_id: int | None = None):
+    """Poll player stats across all competitions, or just one league when
+    triggered off a finished match.
     """
     print("Starting stats poll...")
+    league_ids = [league_id] if league_id is not None else [details.get("bzzorio_id") for details in LEAGUES.values()]
     async with asyncio.TaskGroup() as tg:
-        requests = [tg.create_task(fetch_stat(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        requests = [tg.create_task(fetch_stat(lid)) for lid in league_ids]
         
     player_stats = []
     async with async_session() as db:
@@ -292,11 +355,16 @@ async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=5, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
-    scheduler.add_job(poll_stages, "interval", days=1, id="stages", next_run_time=datetime.now())
-    scheduler.add_job(poll_standings, "interval", days=1, id="standings", next_run_time=datetime.now())
-    scheduler.add_job(poll_stat, "interval", days=1, id='stats', next_run_time=datetime.now())
     scheduler.start()
-    
+
+    # One-time-per-league backfill — only does anything for a league with no
+    # current-season fixtures yet (fresh DB, new season, newly added league).
+    asyncio.create_task(poll_seed_missing_seasons())
+
+    asyncio.create_task(poll_stages())
+    asyncio.create_task(poll_standings())
+    asyncio.create_task(poll_stat())
+
     print("POLLER UP")
     try:
         await asyncio.Event().wait()
