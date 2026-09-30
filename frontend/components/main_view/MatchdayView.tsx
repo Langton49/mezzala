@@ -71,6 +71,16 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
   // change instead of waiting up to 20s for the next poll to pick it up.
   const liveMatches = useLiveMergedFixtures(matches);
 
+  // Tracks whichever round is actually on screen, not whatever's just been
+  // clicked — `round` itself updates synchronously on click, before the new
+  // fetch resolves, and using it directly as the Panel's key below would
+  // remount (and re-animate) the panel on the same render that's still
+  // showing the *previous* round's stale data, before the real swap happens.
+  const [displayKey, setDisplayKey] = useState(`${leagueId}-${round}`);
+  useEffect(() => {
+    if (matches) setDisplayKey(`${leagueId}-${round}`);
+  }, [matches]);
+
   if (leagueId === null) {
     return <EmptyState>Select a league to see matchdays.</EmptyState>;
   }
@@ -106,7 +116,7 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
       {loading || round === null ? (
         <FixtureListSkeleton />
       ) : (
-        <Panel className="fixture-list-enter" key={`${leagueId}-${round}`}>
+        <Panel className="fixture-list-enter" key={displayKey}>
           {(!liveMatches || liveMatches.length === 0) &&
             (error ? <ErrorState>Couldn&apos;t load matches — try again shortly.</ErrorState> : <EmptyState>No matches found.</EmptyState>)}
           {liveMatches?.map((m) => <FixtureRow key={m.id} fixture={m} showDate />)}

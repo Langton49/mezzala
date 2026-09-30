@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Fixture } from "@/lib/types";
 import { WORLD_FOOTBALL_ID } from "@/context/DashboardContext";
@@ -67,6 +67,16 @@ export function DateView({ leagueId }: { leagueId: number | null }) {
   const { data: matches, loading, error } = useJsonFetch<Fixture[]>(path, 20000);
   const liveMatches = useLiveMergedFixtures(matches);
 
+  // Tracks whichever date is actually on screen, not whichever's just been
+  // clicked to — `dateParam` changes synchronously on click, before the new
+  // fetch resolves, and using it directly as the Panel's key below would
+  // remount (and re-animate) the panel while it's still showing the
+  // *previous* date's stale data, before the real swap happens.
+  const [displayKey, setDisplayKey] = useState(dateParam);
+  useEffect(() => {
+    if (matches) setDisplayKey(dateParam);
+  }, [matches]);
+
   if (leagueId === null) {
     return <EmptyState>Select a league, or World Football, to see fixtures.</EmptyState>;
   }
@@ -86,7 +96,7 @@ export function DateView({ leagueId }: { leagueId: number | null }) {
       {loading ? (
         <FixtureListSkeleton />
       ) : (
-        <Panel className="fixture-list-enter" key={dateParam}>
+        <Panel className="fixture-list-enter" key={displayKey}>
           {(!liveMatches || liveMatches.length === 0) &&
             (error ? <ErrorState>Couldn&apos;t load matches — try again shortly.</ErrorState> : <EmptyState>No matches found.</EmptyState>)}
           {liveMatches?.map((m) => <FixtureRow key={m.id} fixture={m} />)}
