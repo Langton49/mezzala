@@ -74,7 +74,12 @@ export function DateView({ leagueId }: { leagueId: number | null }) {
   // *previous* date's stale data, before the real swap happens.
   const [displayKey, setDisplayKey] = useState(dateParam);
   useEffect(() => {
-    if (matches) setDisplayKey(dateParam);
+    if (matches) setDisplayKey(dateParam); // eslint-disable-line react-hooks/set-state-in-effect
+    // Deliberately excludes dateParam — it should read whatever the CURRENT
+    // date is at the moment matches resolves, not re-fire when the date
+    // itself changes (that's the click, which is exactly what this is
+    // supposed to lag behind).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches]);
 
   if (leagueId === null) {

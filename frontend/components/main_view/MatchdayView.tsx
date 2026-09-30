@@ -78,7 +78,12 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
   // showing the *previous* round's stale data, before the real swap happens.
   const [displayKey, setDisplayKey] = useState(`${leagueId}-${round}`);
   useEffect(() => {
-    if (matches) setDisplayKey(`${leagueId}-${round}`);
+    if (matches) setDisplayKey(`${leagueId}-${round}`); // eslint-disable-line react-hooks/set-state-in-effect
+    // Deliberately excludes leagueId/round — should read whatever the
+    // CURRENT league/round is at the moment matches resolves, not re-fire
+    // when either changes (that's the click, which this is meant to lag
+    // behind).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matches]);
 
   if (leagueId === null) {
