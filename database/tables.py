@@ -37,23 +37,6 @@ class Fixture(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-
-class News(Base):
-    __tablename__ = "news"
-    
-    id: Mapped[int] = mapped_column(primary_key=True)
-    title: Mapped[str] = mapped_column(String)
-    link: Mapped[str] = mapped_column(String)
-    date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    description: Mapped[str] = mapped_column(String)
-    image: Mapped[str] = mapped_column(String)
-    
-class Team(Base):
-    __tablename__ = "teams"
-    
-    team_id: Mapped[int] = mapped_column(primary_key=True)
-    league_id: Mapped[int] = mapped_column(Integer, index=True)
-    team_name: Mapped[str] = mapped_column(String)
     
 class CompetitionStages(Base):
     __tablename__ = "comp_stages"

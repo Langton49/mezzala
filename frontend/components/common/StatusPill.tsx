@@ -39,7 +39,9 @@ export function LiveIndicator({ currentMinute, className = "text-xs" }: { curren
 // not-yet-started fixture has nothing to show here, its kickoff time moved
 // to sit under the score instead.
 export function StatusPill({ status, currentMinute }: StatusPillProps) {
-  if (status === "live") {
+  // bzzorio's real status string for an in-progress match is "inprogress" —
+  // confirmed against live data, "live" never actually appears anywhere.
+  if (status === "inprogress") {
     return <LiveIndicator currentMinute={currentMinute} />;
   }
 

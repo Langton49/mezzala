@@ -5,6 +5,7 @@ from .tables import Fixture, News, Team, CompetitionStages, Standing, PlayerStat
 from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
+# HELPERS
 def transform_fixture(dictionary: dict) -> dict:
     last_updated = dictionary.get("last_updated")
     return {
@@ -95,27 +96,7 @@ def transform_standings(standings: list[dict], league_id: int, curr_season: int)
             'zone_type': zone['type'] if zone else None,
         })
     return result
-        
-async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
-    statement = insert(Fixture).values(**fixture_data)
-    statement = statement.on_conflict_do_update(
-        index_elements=['id'],
-        set_={col: val for col, val in fixture_data.items() if col != "id"}
-    )
-    await db.execute(statement)
-    await db.commit()
-    # result = await db.execute(select(Fixture).where(Fixture.id == fixture_data['id']))
-    # return result.scalar_one()
-
-async def upsert_batch(db: AsyncSession, fixtures: list[Fixture]):
-    for fixture in fixtures:
-        await upsert_fixture(db, fixture)
-    print(f"Completed")
-
-async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
-    result = await db.execute(select(Fixture).where(Fixture.status == 'live'))
-    return result.scalars().all()
-
+ 
 def current_season_start() -> datetime:
     """Beginning of the current football season (July 1). Football seasons span a
     calendar-year boundary (e.g. Aug 2026 - May 2027), so from January-June this
@@ -198,56 +179,27 @@ async def get_current_round(db: AsyncSession, league_id: int) -> dict | None:
         "round_number": fixture.round_number if fixture else None,
     }
 
-async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
-    """Get league matches by round/matchday
+# UPSERT FUNCTIONS
+async def upsert_fixtures(db: AsyncSession, fixture_data: list[dict]) -> Fixture:
+    for fixture in fixture_data:
+        statement = insert(Fixture).values(**fixture)
+        statement = statement.on_conflict_do_update(
+            index_elements=['id'],
+            set_={col: val for col, val in fixture.items() if col != "id"}
+        )
+        await db.execute(statement)
+        await db.commit()
 
-    Args:
-        db (AsyncSession): _description_
-        league_id (int): _description_
-        round (int): _description_
-
-    Returns:
-        list[Fixture]: _description_
-    """
-    result = await db.execute(
-        select(Fixture)
-        .where(Fixture.league_id == league_id)
-        .where(Fixture.round_number == round)
-        .where(Fixture.event_date >= current_season_start())
-        .order_by(Fixture.event_date.asc())
-    )
-    return result.scalars().all()
-
-async def get_matches_by_id_date(db: AsyncSession, league_id: int, date: datetime) -> list[Fixture]:
-    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
-    day_end = day_start + timedelta(days=1)
-    result = await db.execute(select(Fixture)
-                              .where(Fixture.league_id == league_id)
-                              .where(Fixture.event_date >= day_start)
-                              .where(Fixture.event_date < day_end)
-                              .order_by(Fixture.event_date.asc()))
-    return result.scalars().all()
-
-async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]:
-    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
-    day_end = day_start + timedelta(days=1)
-    result = await db.execute(select(Fixture)
-                            .where(Fixture.event_date >= day_start)
-                            .where(Fixture.event_date < day_end))
-    return result.scalars().all()    
-    
-def orm_to_dict(obj) -> dict:
-    return {col.key: getattr(obj, col.key) for col in inspect(obj).mapper.column_attrs}
-
-async def upsert_stage(db: AsyncSession, stage: dict):
-    statement = insert(CompetitionStages).values(**stage)
-    statement = statement.on_conflict_do_update(
-        index_elements=['league_id', 'stage'],
-        set_={col: val for col, val in stage.items() if col != "id"}
-    )
-    await db.execute(statement)
-    await db.commit()
-    
+async def upsert_stages(db: AsyncSession, stages: list[dict]):
+    for stage in stages:
+        statement = insert(CompetitionStages).values(**stage)
+        statement = statement.on_conflict_do_update(
+            index_elements=['league_id', 'stage'],
+            set_={col: val for col, val in stage.items() if col != "id"}
+        )
+        await db.execute(statement)
+        await db.commit()
+        
 async def upsert_standings(db: AsyncSession, standings: list[dict]):
     for pos in standings:
         statement = insert(Standing).values(**pos)
@@ -257,13 +209,6 @@ async def upsert_standings(db: AsyncSession, standings: list[dict]):
         )
         await db.execute(statement)
         await db.commit()
-        
-async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> list[Standing]:
-    results = await db.execute(select(Standing)
-                               .where(Standing.league_id == league_id)
-                               .where(Standing.season_id == curr_season)
-                               .order_by(Standing.position.asc()))
-    return results.scalars().all()
 
 async def upsert_stat(db: AsyncSession, stats: list[dict]):
     for ranking in stats:
@@ -275,7 +220,108 @@ async def upsert_stat(db: AsyncSession, stats: list[dict]):
         await db.execute(statement)
         await db.commit()
         
+async def upsert_batch(db: AsyncSession, fixtures: list[dict]):
+    await upsert_fixtures(db, fixtures)
+
+# ENDPOINT FUNCTIONS
+async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
+    """Get live matches via websocket
+    
+    Args:
+        db (AsyncSession): Db connection
+        
+    Returns:
+        list[Fixtures]: List of all live fixtures
+    """
+    result = await db.execute(select(Fixture).where(Fixture.status == 'inprogress'))
+    return result.scalars().all()
+
+async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
+    """Get league matches by round/matchday
+
+    Args:
+        db (AsyncSession): Db connection
+        league_id (int): Competition id
+        round (int): Competition round
+
+    Returns:
+        list[Fixture]: List of fixtures in the round
+    """
+    result = await db.execute(
+        select(Fixture)
+        .where(Fixture.league_id == league_id)
+        .where(Fixture.round_number == round)
+        .where(Fixture.event_date >= current_season_start())
+        .order_by(Fixture.event_date.asc())
+    )
+    return result.scalars().all()
+
+async def get_matches_by_id_date(db: AsyncSession, league_id: int, date: datetime) -> list[Fixture]:
+    """Get league matches by their kickoff time 
+
+    Args:
+        db (AsyncSession): Db connection
+        league_id (int): Competition id
+        date (datetime): Specific date for the kickoff, turns to one day range to account for all fixtures that day
+
+    Returns:
+        list[Fixture]: List of fixtures on date
+    """
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    result = await db.execute(select(Fixture)
+                              .where(Fixture.league_id == league_id)
+                              .where(Fixture.event_date >= day_start)
+                              .where(Fixture.event_date < day_end)
+                              .order_by(Fixture.event_date.asc()))
+    return result.scalars().all()
+
+async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]:
+    """Get matches for specific day for all competitions
+
+    Args:
+        db (AsyncSession): Db connection
+        date (datetime): Specific date for the kickoff, turns to one day range to account for all fixtures that day
+
+    Returns:
+        list[Fixture]: List of all fixtures across all leagues on date
+    """
+    day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    result = await db.execute(select(Fixture)
+                            .where(Fixture.event_date >= day_start)
+                            .where(Fixture.event_date < day_end))
+    return result.scalars().all()    
+            
+async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> list[Standing]:
+    """Get current standings for a competition. Data source needs season id for current season's standings
+
+    Args:
+        db (AsyncSession): Db connection
+        league_id (int): Competition id
+        curr_season (int): Current season id
+
+    Returns:
+        list[Standing]: List of the individual positions of each team in the league's standings
+    """
+    results = await db.execute(select(Standing)
+                               .where(Standing.league_id == league_id)
+                               .where(Standing.season_id == curr_season)
+                               .order_by(Standing.position.asc()))
+    return results.scalars().all()
+        
 async def get_stat(db: AsyncSession, league_id: int, curr_season: int, stat: str) -> list[PlayerStat]:
+    """Get player stats for a given league and stat
+
+    Args:
+        db (AsyncSession): Db connection
+        league_id (int): Competition id
+        curr_season (int): Current season id
+        stat (str): Required player statistic
+
+    Returns:
+        list[PlayerStat]: List of all player positions for that league and stat
+    """
     results = await db.execute(select(PlayerStat)
                                .where(PlayerStat.league_id == league_id)
                                .where(PlayerStat.season_id == curr_season)

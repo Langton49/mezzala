@@ -26,8 +26,11 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
     setRound(current?.round_number ?? (isSelectable ? 1 : null));
   }, [current, isSelectable]);
 
+  // Polled — a round can contain a live match, and its current_minute only
+  // updates in the DB, this re-fetch is what carries that onto the screen.
   const { data: matches, loading } = useJsonFetch<Fixture[]>(
-    isSelectable && round !== null ? `/matches/${leagueId}/round/${round}` : null
+    isSelectable && round !== null ? `/matches/${leagueId}/round/${round}` : null,
+    20000
   );
 
   if (leagueId === null) {

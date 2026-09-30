@@ -1,6 +1,9 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
+"""Types to match ORM types with Python types so proper JSON is sent to the frontend
+"""
+
 class FixtureOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     

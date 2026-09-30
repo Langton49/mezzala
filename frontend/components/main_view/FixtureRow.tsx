@@ -13,7 +13,9 @@ interface FixtureRowProps {
 }
 
 export function FixtureRow({ fixture, showDate = false }: FixtureRowProps) {
-  const isLive = fixture.status === "live";
+  // bzzorio's real status string for an in-progress match is "inprogress" —
+  // confirmed against live data, "live" never actually appears anywhere.
+  const isLive = fixture.status === "inprogress";
   const showTime = !isLive && fixture.status !== "finished";
   const dateTimeParts = [
     showDate ? formatShortDate(fixture.event_date) : null,

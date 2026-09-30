@@ -4,25 +4,27 @@ import json
 from config.settings import settings
 from config.leagues import LEAGUES
 from database.tables import Fixture
-from database.repository import upsert_fixture, upsert_stat, orm_to_dict, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stage, get_current_stage, upsert_standings
+from database.repository import upsert_fixtures, upsert_stat, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 
+# CONFIGS
 redis_client = redis.Redis(
     host="localhost",
     port=6379,
     decode_responses=True
 )
 
+LIVE_MATCHES_STORE: dict[int, tuple] = {}
+
+# HELPERS
 client = httpx.AsyncClient(
     base_url=settings.bzzorio_base_url,
     headers={"Authorization": f"Token {settings.bzzorio_api_key}"},
     timeout=10.0    
 )
-
-LIVE_MATCHES_STORE: dict[int, tuple] = {}
 
 def matches_changed(fixture_id: int, fixture_data: dict) -> bool:
     last_snapshot = (
@@ -37,6 +39,7 @@ def matches_changed(fixture_id: int, fixture_data: dict) -> bool:
     LIVE_MATCHES_STORE[fixture_id] = last_snapshot
     return True
 
+# POLL LIVE FIXTURES
 async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
     """Fetch live fixtures from individual leagues by league id
 
@@ -52,7 +55,7 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
         live_requests = await client.get(f"events/live/", params={"league_id": league_id})
         live_requests.raise_for_status()
         live_response = live_requests.json()['events']
-        return [Fixture(**transform_fixture(fx)) for fx in live_response]
+        return [transform_fixture(fx) for fx in live_response]
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
     except httpx.RequestError as e:
@@ -60,17 +63,52 @@ async def fetch_live_fixtures(league_id: int) -> list[Fixture]:
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
 
+async def poll_live_fixtures():
+    """Poll live fixtures using the live events endpoint and upsert them to db and if anything changes in realtime, redis
+    """
+    print("Live Fixtures poll running...")
+    # Fetch live fixtures async
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_live_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        
+    async with async_session() as db: 
+        for response in requests:
+            league_fixtures = response.result()
+            if not league_fixtures:
+                continue
+            
+            await upsert_fixtures(db, league_fixtures)
+            for fx in league_fixtures:
+                if matches_changed(fx.id, fx):
+                    redis_client.publish(
+                        "match-updates",
+                        json.dumps(fx, default=str)
+                    )
+
+# POLL CURRENT COMPETITION STAGES
 async def fetch_current_stage(league_id: int) -> list[dict]:
+    """Fetch the current stage of competition with league id. Necessary because for competitions like UCL, these change over time
+
+    Args:
+        league_id (int): Competition league id
+
+    Returns:
+        list[dict]: List of all competition stages up until the most recent one
+    """
+    if not league_id:
+        return []
     try:
         req = await client.get(f"/leagues/{league_id}/season/")
         req.raise_for_status()
         result = req.json()['season']
-        season_id = result['id']
+        season_id = result['id'] # Current season id
+        
         comp_stages = []
         if result['is_current']:
             stages = result['stages']
             for idx, stage in enumerate(stages):
                 comp_stages.append(transform_stage(stage, league_id, season_id, idx + 1))
+                
         return comp_stages
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
@@ -78,40 +116,51 @@ async def fetch_current_stage(league_id: int) -> list[dict]:
         print(f"Request failed: {e}")
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
+            
+async def poll_stages():
+    """A daily poll to check the current stage for each competition in LEAGUES
+    """
+    print("Starting stages poll...")
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_current_stage(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+            
+    curr_stages = []
+    async with async_session() as db:
+        for response in requests:
+            stages = response.result()
+            if not stages:
+                continue
+            curr_stages.extend(stages)
+            
+        await upsert_stages(db, curr_stages)
+    print("Stages poll complete.")
 
-async def fetch_fixtures_by_id(league_id: int, round: int) -> list[Fixture]:
-    """Fetch upcoming league fixtures by league id
+# POLL UPCOMING FIXTURES FOR THE NEXT 7 DAYS
+async def fetch_upcoming_fixtures(league_id: int):
+    """Fetch upcoming fixtures by their league id for the next 7 days. This is for clarity as match details can change after matches have already been seeded
 
     Args:
-        league_id (int): The league id associated with the desired league tied to id field in LEAGUES
+        league_id (int): Competition id
+        date (datetime): 
 
     Returns:
-        list[Fixture]: A list of the Fixture object for each response fixture from the API
+        _type_: _description_
     """
-    try:
-        fixture_request = await client.get(f"events/", params={"league_id": league_id, "status": "upcoming", "stage": "regular-season", "round": round, "date_from": f"{datetime.now().strftime("%Y-%m-%d")}", "date_to": f"{datetime.now().strftime("%Y-%m-%d") + timedelta(days=7)}"})
-        fixture_request.raise_for_status()
-        league_fixtures = fixture_request.json()["results"]
-        return [Fixture(**transform_fixture(fx)) for fx in league_fixtures]
-    except httpx.HTTPStatusError as e:
-        print(f"API returned HTTP {e.response.status_code}")
-    except httpx.RequestError as e:
-        print(f"Request failed: {e}")
-    except (KeyError, TypeError) as e:
-            print(f"Unexpected Error")
-
-async def fetch_fixtures_by_date(date: datetime):
+    if not league_id:
+        return []
+    date = datetime.now()
     day_start = datetime(date.year, date.month, date.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=7)
     res = []
     try:
-        fixture_request = await client.get(f"events/", params={"date_from": f"{day_start}", "date_to": f"{day_end}"})
+        fixture_request = await client.get(f"events/", params={"league_id": league_id, "date_from": f"{day_start}", "date_to": f"{day_end}"})
         fixture_request.raise_for_status()
+        
+        # API response has a next endpoint for the next batch of fixtures within the range
         while fixture_request.status_code == 200:
-            res.extend([Fixture(**transform_fixture(fx)) for fx in fixture_request.json()["results"]])
+            res.extend([transform_fixture(fx) for fx in fixture_request.json()["results"]])
             fixture_request = await client.get(f"{fixture_request.json()["next"]}")
         
-        res = [fx for fx in res if fx.league_id in set([det.get("bzzorio_id", 0) for det in LEAGUES.values()])]
         return res
     except httpx.HTTPStatusError as e:
         print(f"API returned HTTP {e.response.status_code}")
@@ -119,33 +168,32 @@ async def fetch_fixtures_by_date(date: datetime):
         print(f"Request failed: {e}")
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
-        
-async def fetch_fixture(fixture_id: int) -> Fixture:
-    """Fetch individual fixture by its id
-
-    Args:
-        fixture_id (int): Fixture id from API
-
-    Returns:
-        Fixture: Fixture object for postgres table
+            
+async def poll_upcoming_matches():
+    """Fetch and upsert fixtures for the next week to ensure fixtures in postgres arent stale when venues, managers or referees change
     """
-    try:
-        fixture_request = client.get(f"events/{fixture_id}")
-        fixture_request.raise_for_status()
-        fixture  = fixture_request.json()
-        return Fixture(**transform_fixture(fixture))
-    except httpx.HTTPStatusError as e:
-        print(f"API returned HTTP {e.response.status_code}")
-    except httpx.RequestError as e:
-        print(f"Request failed: {e}")
-    except (KeyError, TypeError) as e:
-        print(f"Unexpected Error")
+    print("Starting upcoming matches poll...")
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_upcoming_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
     
+    upcoming_fixtures = []
+    async with async_session() as db:
+        for response in requests:
+            fixtures = response.result()
+            if not fixtures:
+                continue
+            upcoming_fixtures.extend(fixtures)
+            
+        await upsert_fixtures(db, upcoming_fixtures)
+            
+    print("Upcoming matches poll complete")
+    
+# POLL LEAGUE STANDINGS FOR ALL COMPS
 async def fetch_standings(league_id: int) -> list[dict]:
-    """Fetch the league table for a given leagues id
+    """Fetch the league table for a given league's id
 
     Args:
-        league_id (int): League id from the API
+        league_id (int): Competition id
 
     Returns:
         list[dict]: List of each teams entry in the league table. Each dict contains team stats as well as position for the league table
@@ -155,8 +203,9 @@ async def fetch_standings(league_id: int) -> list[dict]:
             curr_stage = await get_current_stage(db, league_id)
         if not curr_stage:
             raise Exception("Season id not found")
+        
         curr_season = curr_stage.season_id
-        standings_request = await client.get(f"leagues/{league_id}/standings/?season_id={curr_season}")
+        standings_request = await client.get(f"leagues/{league_id}/standings/", params={"season_id": curr_season})
         standings_request.raise_for_status()
         standings = standings_request.json()['standings']
         standings = transform_standings(standings, league_id, curr_season)
@@ -171,7 +220,24 @@ async def fetch_standings(league_id: int) -> list[dict]:
         # keeps that failure contained to this one function, matching every
         # other fetch_* here, rather than relying on the caller to catch it.
         print(f"Unexpected standings response shape for league {league_id}: {e}")
+        
+async def poll_standings():
+    print("Starting standings poll...")
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_standings(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+    
+    league_standings = []
+    async with async_session() as db:
+        for response in requests:
+            standings = response.result()
+            if not standings:
+                continue
+            league_standings.extend(standings)
+        
+        await upsert_standings(db, league_standings)
+    print("Standings poll complete")        
 
+# POLL PLAYER STATS FOR ALL COMPS
 async def fetch_stat(league_id: int) -> list[dict]:
     """Fetch specified stat `stat` from the API for the given league id
 
@@ -190,6 +256,7 @@ async def fetch_stat(league_id: int) -> list[dict]:
         if not curr_stage:
             raise Exception("Season id not found")
         curr_season = curr_stage.season_id
+        
         for stat in tags:
             stat_request = await client.get(f"leagues/{league_id}/top/{stat}/")
             stat_request.raise_for_status()
@@ -202,70 +269,24 @@ async def fetch_stat(league_id: int) -> list[dict]:
         print(f"Request failed: {e}")
     except (KeyError, TypeError) as e:
             print(f"Unexpected Error")
-
-async def poll_live_fixtures():
-    async with asyncio.TaskGroup() as tg:
-        requests = [tg.create_task(fetch_live_fixtures(details.get("bzzorio_id"))) for details in LEAGUES.values()]
-        
-    async with async_session() as db: 
-        for response in requests:
-            league_fixtures = response.result()
-            if isinstance(league_fixtures, Exception) or not league_fixtures:
-                continue
-            
-            for fx in league_fixtures:
-                print(f"Upserting match with id: {fx.id}")
-                await upsert_fixture(db, orm_to_dict(fx))
-                if matches_changed(fx.id, orm_to_dict(fx)):
-                    redis_client.publish(
-                        "match-updates",
-                        json.dumps(orm_to_dict(fx), default=str)
-                    )
-
-async def poll_upcoming_matches():
-    """Fetch and upsert fixtures for the next week to ensure fixtures in postgres arent stale when venues, managers or referees change
-    """
-    current_day = datetime.now()
-    fixtures = await fetch_fixtures_by_date(current_day - timedelta(days=5))
-    async with async_session() as db:
-        print(f"Daily poll for upcoming matches")
-        for fx in fixtures:
-            try:
-                await upsert_fixture(db, orm_to_dict(fx))
-            except Exception:
-                print(f"Unexpected Error")
-                
-async def poll_stages():
-    print("Daily poll for stages")
-    async with async_session() as db:
-        for details in LEAGUES.values():
-            try:
-                stages = await fetch_current_stage(details['bzzorio_id'])
-                for stage in stages:
-                    await upsert_stage(db, stage)
-            except Exception:
-                print(f"Error trying to poll for league with id {details['bzzorio_id']}")
-                
-async def poll_standings():
-    print("Daily poll for league standings")
-    async with async_session() as db:
-        for details in LEAGUES.values():
-            try:
-                standings = await fetch_standings(details['bzzorio_id'])
-                await upsert_standings(db, standings)
-            except Exception:
-                print(f"Error trying to poll for league with id {details['bzzorio_id']}")
             
 async def poll_stat():
-    print("Daily poll for stats")
+    """Poll player stats across all competitions
+    """
+    print("Starting stats poll...")
+    async with asyncio.TaskGroup() as tg:
+        requests = [tg.create_task(fetch_stat(details.get("bzzorio_id"))) for details in LEAGUES.values()]
+        
+    player_stats = []
     async with async_session() as db:
-        for details in LEAGUES.values():
-            try:
-                stats = await fetch_stat(details['bzzorio_id'])
-                await upsert_stat(db, stats)
-            except Exception:
-                print(f"Unexpected Error")
-    print('Stat poll done')
+        for response in requests:
+            stats = response.result()
+            if not stats:
+                continue
+            player_stats.extend(stats)
+            
+        await upsert_stat(db, player_stats)
+    print('Stats poll complete')
 
 async def main():
     scheduler = AsyncIOScheduler()
@@ -276,7 +297,7 @@ async def main():
     scheduler.add_job(poll_stat, "interval", days=1, id='stats', next_run_time=datetime.now())
     scheduler.start()
     
-    print(f"Poller running")
+    print("POLLER UP")
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
