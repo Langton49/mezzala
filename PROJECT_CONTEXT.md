@@ -1,384 +1,266 @@
 # Mezzala — Soccer Dashboard: Project Context
 
-> **Purpose of this document:** this file is written for an AI coding agent (e.g. Claude Code) picking up this project mid-build. It captures every architectural decision, the reasoning behind it, the current implementation state, known bugs already fixed, and what's left to build. Read this in full before making changes — several early decisions (naming conventions, table design, provider abstraction) constrain how new code should be written.
+> **Purpose of this document:** written for an AI coding agent picking up this project mid-build. It captures current architecture, the reasoning behind non-obvious decisions, what's actually implemented vs. designed-only, and known gotchas. Read in full before making changes. This file was fully rewritten on 2026-10-01 — the previous version described a much earlier, pre-frontend, pre-deployment snapshot of the project and was badly stale; don't trust cached knowledge of this file from before that date.
+>
+> **Current state in one line:** MVP is built and **deployed to production** — frontend on Vercel, backend + poller + Postgres + Redis on Railway, CI (GitHub Actions) gating every merge to `main` via required PR checks.
 
 ---
 
 ## 1. Project Summary
 
-A live soccer dashboard: real-time scores, standings, and curated news, built as a portfolio-grade, professionally-architected project (explicitly not a toy/internship-tier app — this shaped several stack decisions below). Original target was an MVP within one week; the project is now past the initial scaffolding phase and into core pipeline implementation.
+A live soccer dashboard: fixtures (by matchday or by date), standings with zone highlighting, and player stat leaderboards, across major European leagues and cup competitions, with near-real-time score/minute updates for in-progress matches. No news/RSS feature was ultimately built despite earlier design work (see §11). No user accounts/auth — fully public, read-only.
 
 ---
 
-## 2. Tech Stack (current, confirmed)
+## 2. Tech Stack (current, verified against source)
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Backend framework | **FastAPI** (Python, async) | Originally scoped for Go, deliberately switched to Python while the developer learns Go. Architecture was drawn up language-agnostic first specifically so this swap cost nothing structurally. |
-| Poller | **Standalone Python process** (not part of FastAPI app) | Singleton — must never be replicated. Uses `APScheduler` (`AsyncIOScheduler`) for multi-interval job scheduling. |
-| Config | **pydantic-settings** | Typed, validated `.env` loading. See §5. |
-| Database | **Postgres** | Source of truth. Accessed via SQLAlchemy 2.0 async ORM. |
-| Migrations | **Alembic** | Autogenerate workflow. See §6. |
-| Cache / pub-sub | **Redis** | Two distinct jobs: (a) pub/sub fan-out for live score pushes to WebSocket clients, (b) response caching for expensive/slow-changing data (standings, stat leaders). |
-| Frontend | **Next.js (App Router)** — not yet built | ISR-cached pages for standings/news; a client component for the live scoreboard opens its own WebSocket directly to FastAPI, bypassing the page cache entirely. |
-| Local dev infra | **Docker Compose** (Postgres + Redis) | See §7. |
-| HTTP client (poller) | **`httpx`** (async) — mid-migration | Original code used the synchronous `requests` library inside `async def` functions, which silently blocked the event loop. Flagged for replacement; may not be fully migrated yet — check `poller/poller.py` for current state. |
-| RSS parsing | **`feedparser`**, with **`xml.etree.ElementTree`** fallback | Needed because BBC's `<media:thumbnail>` tag isn't reliably surfaced by `feedparser` for this feed. |
+| Backend framework | **FastAPI** (Python 3.14, async) | Stateless REST + one WebSocket route (`/ws/live`). No auth, CORS wide open (`allow_origins=["*"]`) — fine today since nothing is auth-gated or mutating. |
+| Poller | **Standalone Python process** (`poller/poller.py`) | Singleton — must never be replicated (would multiply API calls and cause racing writes). Run via `python -m poller.poller`. Uses `APScheduler` (`AsyncIOScheduler`). |
+| Config | **pydantic-settings** (`config/settings.py`) | All 7 fields required, no defaults — app fails fast at import time if any env var is missing. Field names must match `.env` keys exactly (case-insensitive only). |
+| Database | **Postgres** | Source of truth. SQLAlchemy 2.0 async ORM, `asyncpg` driver at runtime. |
+| Migrations | **Alembic** | `database/migrations/`. Runs with a **separate sync driver** (`psycopg2-binary`) — `env.py` strips `+asyncpg` from the configured URL at runtime via `settings.db_url.replace("+asyncpg", "")`. `psycopg2-binary` must be in `requirements.txt` even though nothing imports it literally — SQLAlchemy resolves it dynamically from the bare `postgresql://` URL scheme, so a plain grep for `import psycopg2` won't find this dependency (this exact gap caused a production outage — see §13). |
+| Cache / pub-sub | **Redis** | One job only, currently: pub/sub fan-out of live fixture changes (`poll_live_fixtures` publishes to channel `match-updates`, `backend/app/redis_listener.py` subscribes and relays to WebSocket clients). The response-caching use case from early design docs was never implemented — standings/stats are read straight from Postgres on every request, no Redis cache layer exists for them. |
+| Frontend | **Next.js 16 (App Router), React 19, Tailwind v4** | Fully built, fully client-rendered (`"use client"` throughout) — no ISR, no server components doing data fetching. A single-page dashboard, not a multi-route site (`app/page.tsx` renders one `<DashboardShell/>`). |
+| Local dev infra | **Docker Compose** (Postgres + Redis only) | `docker-compose.yml`, project root. |
+| HTTP client (poller) | **`httpx`** (fully async) | No synchronous-library remnants. |
+| Dev orchestration | Root `package.json` + `concurrently` | `npm run dev` from repo root runs poller + backend + frontend together. Root `package-lock.json` exists alongside `frontend/package-lock.json` — intentional (see `frontend/next.config.ts`'s `turbopack.root` override, added to resolve Next.js's workspace-root ambiguity warning). |
+
+**Explicitly NOT part of the current stack**, despite appearing in earlier design docs: API-Football (dropped — no field for it in `Settings` anymore), TheSportsDB (team/league/player images are sourced from **bzzorio's own image API** instead, see §3), `feedparser`/RSS ingestion (the package is installed and `config/news_feeds.py` has a static dict of feed URLs, but no ingestion code was ever built — it's inert), openfootball/StatsBomb historical data (never started).
 
 ---
 
-## 3. Data Sources — Decisions and Status
+## 3. Data Source — bzzorio
 
-| Source | Status | Role |
-|---|---|---|
-| **API-Football** | Original primary choice; reference implementation for status codes, coverage flags. `API_FOOTBALL_KEY` still in `.env` but marked `Optional` — **not currently the active source in poller code**. | Fallback / potential primary if bzzoiro doesn't hold up. |
-| **bzzoiro** (`sports.bzzoiro.com`) | **Currently the active live-data source** the poller is built against. Found by the developer, evaluated, chosen to build against first. | Live fixtures, upcoming fixtures, standings, stat leaders (scorers/assists/cards/fouls). |
-| **TheSportsDB** | Planned, not yet implemented. | Team crests/logos (v2 API, `X-API-KEY` header — use this over v1). |
-| **openfootball** (GitHub) | Planned, not yet implemented. | One-time historical seed data only — no live use, no API, just raw JSON files. |
-| **StatsBomb open data** (GitHub) | Planned, post-MVP stretch goal. | Event-level analytics feature (only covers select open-sourced competitions, not comprehensive). Requires attribution if published. |
-| **football-data.co.uk**, **Sportmonks** | Evaluated, **deliberately not used** — redundant with API-Football/bzzoiro. | — |
-| **FotMob (unofficial scraper)** | **Explicitly rejected.** FotMob's ToS prohibits scraping/reproduction for any purpose. Flagged as a real legal risk, not a style preference — do not reintroduce this source. | — |
+**bzzorio** (`sports.bzzoiro.com` — yes, the code spells it `bzzorio`, the domain is `bzzoiro`; this is a deliberate, consistent internal spelling across the whole codebase, not a typo to "fix") is the **sole** live-data source. It provides fixtures (live/upcoming/by-date), standings, stat leaders (scorers/assists/yellow/red cards/fouls), competition stage/round metadata, and team/league/player crest images.
 
-**Known risk, accepted but should stay visible to future contributors:** bzzoiro is an unproven, apparently single-operator service with no independent track record, and its business is adjacent to gambling products (links to Gamdom, sells betting-odds data). It has a genuinely strong free tier and built-in WebSocket support that could eventually replace parts of this project's own infrastructure — but it is being evaluated, not fully trusted yet. Don't assume it's a permanent dependency when refactoring.
+- **API base path includes a version prefix**: `BZZORIO_BASE_URL` must be `https://sports.bzzoiro.com/api/v2/`, **not** the bare domain. Using the bare domain silently 404s on every actual data route while the root `/` and `/docs/` still return 200 (since those don't need the prefix) — this exact mistake caused a multi-hour debugging detour in production (chased as a phantom IP-block before the real cause was found — see §13).
+- **Auth**: `Authorization: Token <BZZORIO_API_KEY>` header, plain (no quotes — if your local `.env` has the key quoted, note that `python-dotenv` strips quotes automatically but a platform's raw env-var UI (e.g. Railway) usually does not, so copy the *unquoted* value when setting it elsewhere).
+- **Images**: `lib/images.ts` (frontend) builds URLs like `https://sports.bzzoiro.com/img/{team|league|player}/{id}/?bg=transparent` (player adds `sor=true`). A valid id with no image returns **204, not 404** — `components/common/Logo.tsx` handles this via the `<img>`'s `onError` handler (not `next/image`, deliberately — needed for the onError fallback to work against this provider's behavior), falling back to an inline SVG placeholder and caching the failure in `sessionStorage` per session so it doesn't re-flicker on remount.
+- **Known data gap, accepted, not a bug to fix**: bzzorio's `status` field for a fixture is passed through unvalidated (`transform_fixture` in `database/repository.py`). Observed values include `notstarted`, `inprogress` (not `"live"` — a wrong assumption cost real debugging time earlier in this project's history), `finished`, `postponed`, and `unresolved` (fixtures with a past `event_date` and null scores — a genuine upstream data gap with no clean resolution; the frontend currently just falls back to showing the scheduled kickoff time for these).
+- **Known data gap, accepted**: standings zone data (`zone_key`/`zone_label`/`zone_type`) sometimes omits a team's zone even when the position falls inside the legend's stated range. Documented, deliberately left as-is.
+- **Nations League (league id 64) doesn't return a flat `standings` list** the way domestic leagues do — `fetch_standings` in `poller.py` catches this via `except (KeyError, TypeError)` and logs a contained message per-poll; this is expected, recurring, harmless log noise, not a crash.
 
-**API-Football free tier constraint (context for why bzzoiro is being trialed):** 100 requests/day, which a 15s poll loop exhausts in ~25 minutes. Pro tier ($19/mo) removes this entirely (~1,440 req/day at 15s intervals on a normal matchday, against a 7,500/day cap).
+`config/leagues.py`'s `LEAGUES` dict is the single source of truth for which competitions the poller tracks (currently 16: 6 domestic leagues, 2 domestic cups × 3 countries minus gaps, 4 UEFA competitions — see the file directly for the exact list). Each entry has `bzzorio_id`, `name`, `country`, `type` (`"league"` or `"cup"`). **Known typo preserved in the dict key** (not the data): the Championship's key is `"champoinship"` — harmless since nothing keys off that string externally, but don't "fix" it without checking nothing depends on the misspelling.
+
+**The frontend does NOT read this dict.** `frontend/components/sidebar/LeagueList.tsx` hand-maintains its own separate `PLACEHOLDER_LEAGUES` array (id + display name only, no backend call). **This is a known, accepted drift risk** — if a league is added/removed/renamed in `config/leagues.py`, the frontend list has to be updated by hand or it silently goes stale (a real instance of this was caught and fixed once already: Carabao Cup/EFL Cup, id 40, was missing from the frontend list for a while after being present in the backend config the whole time). A proper fix would be a backend endpoint exposing the league list dynamically — not built, flagged as a good next step.
 
 ---
 
 ## 4. Architecture — Data Flow
 
-Full path: **raw provider API → normalize → Postgres (write) + Redis (publish, conditional) → REST (cached reads) + WebSocket (live push) → Next.js (ISR pages + client-side live component) → browser.**
+```
+bzzorio API → poller (singleton) → Postgres (always, every cycle)
+                                  → Redis "match-updates" channel (only on actual change)
 
-### Core principles established (do not violate when extending):
-1. **Only the poller writes match data.** No route handler, script, or other process is allowed to write to the `fixtures` table.
-2. **Postgres is truth; Redis is "what just changed."** Every poll cycle UPSERTs to Postgres regardless of whether anything changed. Redis only gets a publish when a diff is actually detected (see §9).
-3. **Normalize once, per provider.** Each provider's raw response shape is converted into one internal shape immediately on ingestion — nothing downstream should ever see provider-specific field names or status codes.
-4. **The poller is a singleton, always.** Never scale it horizontally — doing so would multiply API calls against the daily quota and cause duplicate/racing writes.
-5. **FastAPI instances are stateless and horizontally scalable**, sitting behind a load balancer (not yet provisioned — single instance for MVP, documented as a deliberate future step, not week-one work).
-6. **WebSocket clients never talk to Redis directly** — only backend instances subscribe to Redis; each instance fans out to its own locally-connected clients via an in-memory `ConnectionManager`.
+Postgres → backend (REST, read-only, never calls bzzorio itself)
+Redis    → backend (redis_listener.py subscribes) → ConnectionManager → WebSocket clients
 
-### WebSocket hub design (not yet implemented — see §11 for what's built vs. pending)
-- One `redis_listener()` background task per FastAPI instance, started once via the `lifespan` context manager at app boot — not per-connection, not per-request.
-- `ConnectionManager` uses an **inverted index** for O(k) broadcast instead of O(n) scanning:
-  - `connections: dict[conn_id, WebSocket]`
-  - `client_leagues: dict[conn_id, set[league_id]]` (for cleanup)
-  - `league_subscribers: dict[league_id, set[conn_id]]` (for lookup)
-- `broadcast()` must copy the subscriber set before iterating (`list(...)`) to avoid "set changed size during iteration" if a client disconnects mid-broadcast.
-- Sends within a broadcast use `asyncio.gather`, not a sequential loop, so one slow client doesn't delay others.
+frontend: REST poll (useJsonFetch, pollMs) for baseline freshness
+        + WebSocket (useLiveUpdates / useLiveMergedFixtures) for instant patches in between polls
+```
 
-### Rendering split (frontend, not yet built)
-- **ISR** (`revalidate: 60–120s`) for standings/news — staleness is invisible to users here.
-- **Client component** (`"use client"`) for the live scoreboard — bypasses ISR entirely, opens its own WebSocket on mount. Initial value comes either from an ISR-cached prop (fast paint, tiny staleness window) or a client-side fetch on mount (always fresh, small loading flash) — not yet decided which.
+### Principles that hold today (verified, not aspirational):
+1. **Only the poller writes fixture/standings/stat data.** No route handler writes to any of these tables.
+2. **Postgres is truth; Redis is "what just changed."** Every `poll_live_fixtures` cycle UPSERTs to Postgres regardless of whether anything changed (`matches_changed()` + `LIVE_MATCHES_STORE` in-memory dict gates the Redis publish only, not the Postgres write).
+3. **The poller is a singleton, always.**
+4. **Backend instances are stateless** — one is running in production today; horizontal scaling isn't provisioned (not needed at current traffic).
 
-### Entity resolution across providers (designed, not yet built)
-Team/league IDs differ per provider. Planned solution: a `team_id_mappings` table (`canonical_team_id, source, source_team_id`) — this table exists in earlier model drafts but was written before the bzzoiro pivot; **needs to be revisited** since current code has no cross-provider ID reconciliation yet.
-
-**League config pattern (designed, partially implemented via developer's own dataframe export from bzzoiro):**
-- Stable fields (`id`, `name`, `country`) → hardcode in a static `LEAGUES` dict, keyed by `name_country` (not `name` alone — league names collide across countries).
-- Volatile fields (`current_season.id`) → **do not hardcode**, fetch at runtime and cache with periodic refresh, since season IDs roll over.
+### What differs from early design docs (if you find older notes, trust this instead):
+- **No ISR, no server-rendered pages with revalidation.** The frontend is a single fully-client-rendered page. Freshness comes from REST polling (`useJsonFetch`'s `pollMs` param, 20s on fixture views) plus the WebSocket layer for instant live-score patches, not from Next.js's caching model.
+- **`ConnectionManager` (`backend/app/connection_manager.py`) is a flat broadcast-to-all**, not the inverted per-league-subscriber-index design from early docs. `/ws/live`'s `leagues` query param is accepted but **unused** — every connected client gets every match-update regardless of league. This is a known, deliberate simplification (the frontend's own merge logic already discards updates for fixtures not currently in view, so the only cost is wasted bandwidth, not correctness) — revisit if traffic ever makes this matter.
+- **`poll_stages`/`poll_standings`/`poll_stat` are event-triggered, not on a fixed timer.** `poll_live_fixtures` (every 30s) detects a fixture transitioning to `"finished"` for the first time and fires `poll_stages_then_stats(league_id)` for just that league. All three also run once at poller startup (`poll_seed_missing_seasons()` + `poll_stages_then_stats()` in `main()`) so a fresh deploy isn't empty while waiting for the first match to finish. **Ordering matters here**: `poll_standings`/`poll_stat` both resolve a season id via `comp_stages` (written by `poll_stages`), so `poll_stages_then_stats()` deliberately `await`s `poll_stages()` to completion before firing the other two — firing all three as independent concurrent tasks is a real race that's invisible on any DB that already has stage data (which is every local dev DB, ever) and fails deterministically on a genuinely empty one (this exact bug shipped once, caught immediately via Railway's fresh-DB logs — see §13).
 
 ---
 
-## 5. Config Layer (`config/`)
+## 5. Config Layer (`config/settings.py`)
 
-```
-config/
-├── __init__.py      # re-exports: from .settings import settings
-└── settings.py
-```
-
-Uses `pydantic-settings`. Fields are matched to `.env` keys **case-insensitively but not name-insensitively** — `DB_URL` in `.env` will NOT satisfy a `database_url` field; names must match exactly modulo case. This exact mismatch caused multiple debugging sessions during setup (see §10).
-
-Known current fields (verify against actual file — this list was assembled from conversation, not a live read):
 ```python
 class Settings(BaseSettings):
-    database_url: str
+    bzzorio_api_key: str
+    bzzorio_base_url: str
+    db_url: str
     redis_url: str
-    api_football_key: Optional[str] = None
-    bzzorio_api_key: Optional[str] = None
-    bzzorio_base_url: Optional[str] = None
-
-    class Config:
-        env_file = ".env"
-```
-Note: project code consistently spells it `bzzorio` (o-r-i-o) even though the actual service domain is `bzzoiro` (o-i-r-o). This is a deliberate, consistent internal spelling choice, not a bug — don't "fix" it without updating every reference.
-
-`.env` (values illustrative, not the real secrets):
-```
-DATABASE_URL=postgresql+asyncpg://mezzala:mezzala_2345@localhost:5432/mezzala_db
-REDIS_URL=redis://localhost:6379
-POSTGRES_USER=mezzala
-POSTGRES_PASSWORD=mezzala_2345
-POSTGRES_DB=mezzala_db
-BZZORIO_API_KEY=<key>
-BZZORIO_BASE_URL=https://sports.bzzoiro.com/
-API_FOOTBALL_KEY=<optional, not currently used>
+    postgres_user: str
+    postgres_pass: str
+    postgres_db: str
+    model_config = SettingsConfigDict(env_file=".env")
 ```
 
-**`.env` must never be committed.** `.env.example` (same keys, blank values) should exist for onboarding and IS safe to commit. Verify `git log --all --full-history -- .env` is clean — if `.env` was ever committed, rotate all keys rather than trying to scrub history.
+All 7 required, no `Optional` fields — missing any one raises `pydantic.ValidationError` at import time (fail-fast, this is correct behavior, not a bug). **`postgres_user`/`postgres_pass`/`postgres_db` are declared but never actually read anywhere in application code** (grepped, confirmed) — they exist only because `docker-compose.yml` needs them for local Postgres bootstrapping. They still need *some* value set wherever the app runs (Railway included) or the app won't boot, even though the value itself is functionally inert.
+
+`.env.example` (repo root, safe to commit) documents the shape with placeholder values. `frontend/.env.example` separately documents `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` — **both are baked in at Next.js build time, not read at runtime**, so they must be set in Vercel's project settings *before* the first build, not after.
 
 ---
 
-## 6. Database Layer (`database/`)
+## 6. Database Layer
 
 ```
 database/
-├── __init__.py
-├── database.py       # engine, async_session factory, get_db() dependency
-├── models.py          # SQLAlchemy ORM models
-├── repository.py       # ALL reads/writes go through here — no raw queries elsewhere
-└── migrations/
-    ├── env.py
-    └── versions/
+├── database.py    # async engine, async_session factory, get_session() FastAPI dependency
+├── tables.py       # SQLAlchemy ORM models (Base, Fixture, CompetitionStages, Standing, PlayerStat)
+├── repository.py   # ALL reads/writes go through here — no raw queries elsewhere
+└── migrations/     # Alembic
 ```
 
-### `database.py`
-- `create_async_engine(settings.database_url, echo=False, pool_size=10, max_overflow=5)`
-- `async_sessionmaker(engine, expire_on_commit=False)` — `expire_on_commit=False` is deliberate: without it, objects become unusable immediately after commit, forcing redundant re-queries (matters for the poller, which writes then immediately may need the same object).
-- `get_db()` is an async generator used as a FastAPI dependency (`Depends(get_db)`). Session opens before `yield`, closes automatically after, via `async with`.
-- **The poller does NOT use `get_db()`** — it's not a request/response cycle. It calls `async_session()` directly, scoped per write.
+**No separate `Team` table exists.** Team identity is denormalized directly into whichever table references it (`home_team_id`/`home_team` string pair on `Fixture`, `team_id`/`team_name` on `Standing`/`PlayerStat`) — there is no cross-provider entity-resolution layer; this was designed pre-bzzorio-pivot in very early docs and was never built, since bzzorio is the only source.
 
-### `models.py` — Schema evolution (important history)
-The schema went through real iteration — an agent picking this up should know the *current* state, not the history, but the reasoning matters for future changes:
+**Current schema (verified against `database/tables.py`), 4 tables:**
 
-1. Started as two tables: `Match` (general) + a separate `LiveFixture` table for live-specific fields.
-2. **Consolidated into a single `Fixture` table** with nullable columns, because a match's data genuinely changes shape over its lifecycle (scheduled → live → finished), and splitting it across tables caused "which table is the source of truth" ambiguity.
+- **`Fixture`** (`fixtures`) — PK `id` (bzzorio's own fixture id, not autoincrement). `league_id`, `home_team_id`/`home_team`/`home_coach_id`, `away_team_id`/`away_team`/`away_coach_id`, `referee_id`, `round_number`/`round_name`/`group_name`, `stage`/`stage_name`, `venue_id`, `event_date` (`DateTime(timezone=True)` — must stay tz-aware), `status`, `home_score`/`away_score`/`current_minute`/`home_score_ht`/`away_score_ht`, `last_updated` (auto `onupdate`).
+- **`CompetitionStages`** (`comp_stages`) — PK autoincrement `id`, unique on `(league_id, stage)`. `season_id`, `stage`/`stage_name`, `rounds`, `sort_order`, `start_date`/`end_date`.
+- **`Standing`** (`standings`) — PK autoincrement `id`, unique on `(league_id, season_id, team_id)`. Full table stats (`played`/`won`/`drawn`/`lost`/`gf`/`ga`/`gd`/`pts`), optional xG fields, `form`, `zone_key`/`zone_label`/`zone_type`.
+- **`PlayerStat`** (`player_stats`) — PK autoincrement `id`, unique on `(league_id, season_id, stat_type, player_id)`. `stat_type` is one of `scorers`/`assists`/`yellowcards`/`redcards`/`fouls`.
 
-**Current consolidated schema:**
-```python
-class Fixture(Base):
-    __tablename__ = "fixtures"
+**`repository.py` conventions:**
+- Every `upsert_*` function (`upsert_fixtures`, `upsert_stages`, `upsert_standings`, `upsert_stat`) takes a **`list[dict]`** and loops internally — callers must pass the full batch, not call it once per item (a mismatch here caused a real production crash once, see §13).
+- `transform_*` functions (`transform_fixture`, `transform_stage`, `transform_standings`, `transform_stat`) convert raw bzzorio JSON into the dict shape `upsert_*` expects — always call these before upserting, never pass raw API JSON through directly.
+- `get_current_stage(db, league_id)` returns `None` (not an exception) when a league has no seeded stage data — **callers must check for `None` explicitly**; two routes (`standings.py`, `stats.py`) originally didn't and crashed with a 500 on any unseeded/typo'd league id. Fixed, but if you add a new route using this function, remember the check.
+- `has_fixtures_for_season(db, league_id)` backs the one-time seed-guard (`poll_seed_missing_seasons`) — checks for any fixture at or after `current_season_start()` for that league.
+- `orm_to_dict(obj)` converts an ORM instance back to a plain dict via `inspect(obj).mapper.column_attrs` — needed since ORM objects have no `.model_dump()`.
 
-    match_id: Mapped[int] = mapped_column(primary_key=True)
-    league_id: Mapped[int] = mapped_column(Integer, index=True)
-    home_team_id: Mapped[int] = mapped_column(Integer)
-    home_team: Mapped[str] = mapped_column(String)
-    away_team_id: Mapped[int] = mapped_column(Integer)
-    away_team: Mapped[str] = mapped_column(String)
-    venue_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # MUST be timezone=True — see §10 bug
-    status: Mapped[str] = mapped_column(String, index=True, default="scheduled")
-
-    home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    current_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    home_score_ht: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    away_score_ht: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),   # MUST be a lambda, not a called value — see §10 bug
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-```
-
-**Open item flagged but not yet resolved:** `status` needs to be populated from an explicit field in the bzzoiro response, not inferred from other fields being null/non-null (inferring breaks once "finished" also has null `current_minute`). Check whether bzzoiro's raw payload includes a status field and map it directly in `transform_fixture`.
-
-**`TeamIDMapping`** table was designed earlier for cross-provider entity resolution but predates the bzzoiro-only pivot — needs review, may not reflect current provider set.
-
-### `repository.py` — the abstraction layer
-Every DB read/write in the entire app goes through functions here — no other file should contain a raw `select()`/`insert()`.
-
-```python
-async def upsert_fixture(db: AsyncSession, fixture_data: dict) -> Fixture:
-    stmt = insert(Fixture).values(**fixture_data)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["match_id"],
-        set_={k: v for k, v in fixture_data.items() if k != "match_id"},
-    )
-    await db.execute(stmt)
-    await db.commit()
-    result = await db.execute(select(Fixture).where(Fixture.match_id == fixture_data["match_id"]))
-    return result.scalar_one()
-```
-
-`orm_to_dict()` also lives here — converts an ORM instance back to a plain dict (needed since ORM objects have no `.model_dump()`; that's Pydantic-only):
-```python
-def orm_to_dict(obj) -> dict:
-    return {col.key: getattr(obj, col.key) for col in inspect(obj).mapper.column_attrs}
-```
-
-**Naming convention enforced project-wide, due to a real bug encountered (§10):** Pydantic schemas (raw-fetch return types) and SQLAlchemy ORM models must NOT share identical class names in files where both are imported — caused a silent wrong-binding bug previously (`LiveFixture` existed as both a Pydantic schema and an ORM model simultaneously). Current convention: ORM models live in `database/models.py` under their plain name (`Fixture`); Pydantic fetch-schemas should be named distinctly (e.g. `FixtureData`) if both are ever imported into the same file.
-
-**Type-flow rule to keep straight when writing new code:** `.model_dump()` is Pydantic-only — call it right after a `fetch_*` function returns, before passing into any `upsert_*`. Anything returned FROM `upsert_*` or a `select()` is an ORM object — use `orm_to_dict()`, never `.model_dump()`, on those.
-
-### Migrations (Alembic)
-- Installed and invoked as `python -m alembic ...` (not bare `alembic`) — Windows PATH issue, module invocation sidesteps it reliably.
-- `database/migrations/env.py` must set the sync-driver URL explicitly (Alembic runs synchronously, app uses `asyncpg`):
-  ```python
-  config.set_main_option("sqlalchemy.url", settings.database_url.replace("+asyncpg", ""))
-  target_metadata = Base.metadata
-  ```
-  This line must execute at module top-level, before `run_migrations_online`/`offline` are defined/called.
-- Requires `psycopg2-binary` installed separately from the app's `asyncpg` driver — two different drivers for two different execution modes (sync migrations vs. async app).
-- Workflow for any schema change: `python -m alembic revision --autogenerate -m "description"` → **inspect the generated file before applying** (autogenerate isn't infallible) → `python -m alembic upgrade head`.
-- If autogenerate produces an empty migration, the new model class likely isn't imported anywhere `env.py`'s module tree touches — it never registered on `Base.metadata`.
-- All commands must run from `project_root`, not from inside `database/` — relative imports in `env.py` (`from config import settings`) fail otherwise since Python adds CWD to the import path.
+### Migrations
+- Run as `python -m alembic ...` from repo root (not bare `alembic`, not from inside `database/` — relative imports in `env.py` need repo root on the import path).
+- `database/migrations/env.py` sets `config.set_main_option("sqlalchemy.url", settings.db_url.replace("+asyncpg", ""))` at module top level — this forces the **sync** `psycopg2` driver for the migration run itself, separate from the app's async `asyncpg` driver at runtime. **`psycopg2-binary` must be in `requirements.txt`** (see §2) — this is easy to miss because nothing imports it by name anywhere in the source.
+- Workflow for a schema change: `python -m alembic revision --autogenerate -m "description"` → inspect the generated file → `python -m alembic upgrade head`.
+- In production, migrations run automatically on every backend deploy via the Railway start command (see §8) — `alembic upgrade head` is idempotent, safe to run on every boot even when there's nothing pending.
 
 ---
 
 ## 7. Docker / Local Infra
 
-`docker-compose.yml` (project root) — Postgres + Redis, both with named volumes (survive restarts) and healthchecks:
-
-```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: mezzala_postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports: ["5432:5432"]
-    volumes: [postgres_data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-
-  redis:
-    image: redis:7-alpine
-    container_name: mezzala_redis
-    ports: ["6379:6379"]
-    volumes: [redis_data:/data]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-
-volumes:
-  postgres_data:
-  redis_data:
-```
-
-**Critical constraint:** `.env` must sit in the same directory Docker Compose is invoked from (normally project root, next to `docker-compose.yml`) — Compose silently defaults every referenced variable to blank if it can't find the file, with no hard error (see §10 for the exact failure mode this caused).
-
-**Also critical:** Postgres env vars (`POSTGRES_USER`/`PASSWORD`/`DB`) only take effect on **first initialization** of the data volume. Changing `.env` after the fact requires `docker compose down -v` (destroys the volume) + `up -d` again to actually take effect — a plain restart will not pick up new credentials.
+`docker-compose.yml` (repo root) — Postgres 16 + Redis 7, named volumes, healthchecks. Containers: `mezzala_postgres`, `mezzala_redis`. Standard `docker compose up -d`; `.env` must sit next to `docker-compose.yml`. Postgres env vars only take effect on first volume init — changing credentials later needs `docker compose down -v` + `up -d` to actually apply.
 
 ---
 
-## 8. Poller (`poller/poller.py`)
+## 8. Poller (`poller/poller.py`) — current jobs
 
-Standalone script, run as its own process — never inside FastAPI, never replicated.
+| Job | Schedule | Notes |
+|---|---|---|
+| `poll_live_fixtures` | every 30s | Concurrent per-league fetch (`asyncio.TaskGroup`). Upserts regardless of change; publishes to Redis only on change (`matches_changed`); fires `poll_stages_then_stats(league_id)` when a fixture first transitions to `"finished"`. **Was 5s, then 15s, now 30s** — reduced deliberately for Railway cost (compute is metered per-second; an always-on 5s-interval worker was a meaningful chunk of the monthly bill). WebSocket delivery to the frontend is still near-instant regardless of this interval, since that's push-based off whatever the poller detects, not tied to how often it checks. |
+| `poll_upcoming_matches` | daily (+ once at startup) | Rolling 7-day window, all leagues, keeps venue/referee/manager changes fresh for already-known upcoming fixtures. |
+| `poll_seed_missing_seasons` | once at startup only | Guarded by `has_fixtures_for_season` — full-season backfill only for leagues with zero fixtures in Postgres (fresh DB, new season, newly-added league). Does nothing on an ordinary restart. |
+| `poll_stages_then_stats` | once at startup + event-triggered | See §4 for the ordering/race-condition note. Accepts an optional `league_id` to scope to one league (event-triggered case) or `None` for all (startup case). |
 
-### Responsibilities, per cycle:
-1. Fetch raw data from bzzoiro (live fixtures every ~15s — see §10 for why 5s was too aggressive; standings every 30min; stat leaders every 6hr; upcoming fixtures every 24hr).
-2. Normalize via `transform_fixture()` (unified function, takes a `status` param — see §6 schema note).
-3. UPSERT to Postgres via `upsert_fixture()` — **always**, every cycle, regardless of whether anything changed.
-4. Diff-check against in-memory last-known-state (see §9) — publish to Redis **only if changed**.
-5. RSS ingestion runs on its own separate, much slower schedule (15–30 min) — must not block or be blocked by the live-score loop.
+`redis_client` is `redis.asyncio.from_url(settings.redis_url)` — **must stay async and must use `settings.redis_url`**, not a hardcoded `localhost` sync client. This exact regression shipped once (worked fine locally where Redis genuinely is on localhost; broke silently in any non-local deployment) — see §13.
 
-### Scheduling — APScheduler
-```python
-scheduler = AsyncIOScheduler()
-scheduler.add_job(poll_live_fixtures, "interval", seconds=15, id="live_fixtures")
-scheduler.add_job(poll_standings, "interval", minutes=30, id="standings")
-scheduler.add_job(poll_stats, "interval", hours=6, id="stats")
-scheduler.add_job(poll_upcoming_fixtures, "interval", hours=24, id="fixtures")
-scheduler.start()
-```
-Process must be kept alive after `scheduler.start()` (which returns immediately) via `await asyncio.Event().wait()` inside an `async def main()` — otherwise the process exits immediately and no job ever fires. This was an actual bug hit during setup.
-
-### Fetching — concurrency requirement
-Per-league fetches inside a single poll cycle must run **concurrently** via `asyncio.gather(..., return_exceptions=True)`, not sequentially — sequential fetching across several leagues caused cycle time to exceed the poll interval itself, triggering APScheduler's `max_instances=1` skip-if-still-running behavior (see §10).
-
-### Provider abstraction
-`fetch_*` functions are bzzoiro-specific today (`fetch_live_fixtures`, `fetch_league_fixtures`, `fetch_fixture`, `fetch_standings`, `fetch_stat`) — each hits `{bzzorio_base_url}/...` with `Authorization: Token {bzzorio_api_key}`. If/when API-Football or another provider is reintroduced, the established pattern (per this project's own architecture docs) is: keep the internal `Fixture`/normalized shape identical, add a second `transform_*_apifootball()` function, and only the fetch/transform layer should know which provider it's talking to.
-
-### Redis caching (for non-live, cacheable data)
-Standings and stat leaders are cached in Redis with TTLs matching their own refresh interval (not published via pub/sub — this is plain caching, a different Redis use than the live-score pub/sub):
-```python
-await cache_set(f"standings:{league_id}", standings, ttl_seconds=1800)
-await cache_set(f"stats:{league_id}:{stat}", stats, ttl_seconds=21600)
-```
-Values must be JSON-serialized before storage (`json.dumps(..., default=str)` for plain dicts, or `.model_dump(mode="json")` for Pydantic objects) — Redis has no concept of Python objects, everything is bytes/strings. `pickle` was explicitly ruled out as unsafe for this (arbitrary code execution risk on deserialization from shared infra).
+`client` (the bzzorio httpx client) is created once at module level with `base_url=settings.bzzorio_base_url` and the auth header baked in — every `fetch_*` function just does relative-path `client.get("events/live/", ...)` calls against it.
 
 ---
 
-## 9. Change Detection (diff-before-publish)
+## 9. Backend (`backend/`)
 
-**Decision made and reasoning, in case this needs to be revisited:** state comparison happens via a **module-level in-memory dict inside the poller process**, not Redis and not a Postgres pre-read.
-
-- **Why not query Postgres first?** Doubles DB traffic every cycle for no benefit, since the write is about to happen anyway.
-- **Why not Redis?** A network round-trip to compare state that the *same process* already computed seconds ago has no upside — Redis is for state that must be shared *across processes* or survive a restart in a way that matters; neither applies here.
-- **Why in-memory is safe despite not being persistent:** the poller is a singleton, so it's always the same process reading and writing this state. On restart, the dict resets to empty, causing one harmless over-publish burst (every live match looks "new," gets published once) — Postgres is unaffected (always written regardless), and WebSocket clients just get one redundant no-op update.
-
-```python
-_last_known_state: dict[int, tuple] = {}
-
-def has_changed(match_id: int, fixture_data: dict) -> bool:
-    snapshot = (
-        fixture_data["status"],
-        fixture_data["home_score"],
-        fixture_data["away_score"],
-        fixture_data["current_minute"],
-    )
-    if _last_known_state.get(match_id) == snapshot:
-        return False
-    _last_known_state[match_id] = snapshot
-    return True
 ```
-Only fields that can actually change mid-match belong in the comparison tuple — static fields (team names, venue) would just cause wasted comparisons.
+backend/
+├── app/
+│   ├── main.py              # FastAPI app, CORS, lifespan (starts redis_listener)
+│   ├── connection_manager.py # flat broadcast-to-all WebSocket manager
+│   └── redis_listener.py     # subscribes to "match-updates", relays to ConnectionManager
+├── connection_manager/routes/
+│   ├── matches.py            # /matches/..., /ws/live
+│   ├── standings.py          # /standings/{league_id}
+│   └── stats.py              # /stats/{league_id}/{stat}
+└── types/types.py            # Pydantic response models (FixtureOut, StandingsOut, StatOut)
+```
 
-**This is implemented conceptually but not yet confirmed wired into `poller.py`** — verify current state of the file; this was the most recent topic discussed before this document was requested.
+Routes are thin — they call `repository.py` functions directly and return ORM results (FastAPI's `response_model` handles serialization via `from_attributes=True` on each `*Out` model). Path params are typed directly (`league_id: int`, `date: datetime.date`) so FastAPI/Pydantic validates automatically and returns a clean `422` on bad input — **don't** manually `int(...)`/`datetime.fromisoformat(...)` a path param inside a route body, that bypasses this and turns bad input into an unhandled 500 (this exact pattern existed in `matches.py` and was fixed).
+
+`GET /` is a bare health check (`{"status": "ok"}`), used by both manual checks and worth knowing about if adding uptime monitoring later.
 
 ---
 
-## 10. Bugs Already Hit and Fixed (don't reintroduce these)
+## 10. Frontend (`frontend/`)
+
+Next.js App Router, fully client-rendered, Tailwind v4. No routing beyond the single page — "navigation" is all client state (league, tab, matchday/date, sub-view), persisted to the **URL query string** so reload/share/bookmark preserves it (`?league=7&tab=standings&round=5` etc.) — implemented via `context/DashboardContext.tsx` (league + tab) and `hooks/useUrlParam.ts` (a small shared `useUrlParamSetter` used by `FixtureView`/`MatchdayView`/`DateView` for the sub-tab/round/date). `router.replace` throughout, never `push` — navigating doesn't fill up browser history.
+
+**Layout**: `DashboardShell` → centered `max-w-[1200px]` band (not full-bleed) containing a `Sidebar` (a self-contained rounded-card nav, `self-start` so it doesn't stretch to viewport height — **not collapsible**, that feature was built then deliberately removed once the sidebar stopped needing to conserve width) and `MainView` (further capped to `max-w-3xl` for actual content — fixture rows/standings table/stat cards all render at a fixed reading width regardless of viewport, by design, after an explicit decision that a wide, mostly-empty layout read as "generic"). **No responsive/mobile support exists** — zero breakpoint classes anywhere in the codebase, fixed-width sidebar; acceptable only if this stays a desktop-only tool.
+
+**Data fetching**: `hooks/useJsonFetch.ts` is the single shared fetch hook (loading/error/stale-data handling for every view). Key behaviors, each added for a specific reason — don't simplify without understanding why:
+- Optional `pollMs` param for background refresh (fixture views poll every 20s) without flipping `loading` back to true.
+- A fetch failure sets an `error` flag but **does not clear existing data** — a transient poll failure shouldn't blank out a perfectly good list already on screen. Views render a distinct `ErrorState` (not `EmptyState`) only when there's an error *and* nothing to show.
+- A non-2xx response is treated as an error (checks `res.ok` before parsing), not handed through as if it were valid data — otherwise a backend 500 with a JSON error body would get passed to `.sort()`/`.slice()` downstream and throw at render time.
+- Skeleton display is deliberately delayed (`SKELETON_DELAY_MS`, currently **600ms** — tuned against real production latency, Vercel-to-Railway round-trips typically run 280–525ms; the original 150ms was tuned against localhost where everything was sub-10ms and was far too aggressive in production, causing a skeleton flash on nearly every navigation). Below that threshold, stale-but-valid previous data just stays on screen until new data quietly replaces it.
+
+**Live updates**: `hooks/useLiveUpdates.ts` — raw WebSocket connection to `/ws/live` (auto-reconnects on drop, no backoff beyond a flat retry delay) plus `useLiveMergedFixtures(matches)`, which patches individual fixtures into an already-fetched list the instant a WS message arrives, without waiting for the next REST poll. Only merges the 4 fields that can actually change live (`status`/`home_score`/`away_score`/`current_minute`) — the WS payload's `event_date` is serialized via Python's `str()`, not ISO 8601, so merging the whole payload would risk feeding a malformed date into date-formatting code elsewhere.
+
+**Panel remount/animation gotcha**: `MatchdayView`/`DateView` key their content `Panel` on a `displayKey` state that only updates once new data has actually arrived (inside a `useEffect` on `matches`), **not** on the immediately-clicked `round`/`date` value. Keying directly on the navigation target caused the panel to remount (and re-trigger its entrance animation) on the very next render — while still showing the *previous* round/date's stale data — before the new fetch had resolved, producing a double-flicker on any real network latency (invisible on localhost, obvious in production). If you touch this pattern, keep the "state that drives the fetch" and "state that drives the remount key" separate.
+
+**Images**: `components/common/Logo.tsx` + `lib/images.ts` — see §3.
+
+**Dark mode**: a complete, retuned color palette exists in `app/globals.css` under `@media (prefers-color-scheme: dark)`, but there is **no toggle or activation mechanism** — it only applies if the OS/browser itself is in dark mode. Not wired to a user preference or class-based toggle.
+
+**Known-unused, deliberately kept**: `components/ai_panel/AiView.tsx` exists, is not imported or rendered anywhere — kept intentionally as a stub for a future feature, not dead code to delete.
+
+---
+
+## 11. Deployment & CI/CD
+
+**Hosting**: Vercel (frontend) + Railway (backend web service, poller worker service, managed Postgres, managed Redis — all in one Railway project, Hobby plan). Both platforms deploy automatically via their native GitHub App integration on every push to `main` — **GitHub Actions is not the deploy trigger**, it's a CI gate only.
+
+**GitHub Actions** (`.github/workflows/ci.yml`): two jobs, `frontend` (npm ci → tsc → eslint → next build) and `backend` (pip install -r requirements.txt → import-check `backend.app.main` and `poller.poller`, using fake-but-syntactically-valid inline env vars since there's no real `.env` in CI and `Settings`/`create_async_engine`/`redis.from_url` are all lazy enough that a fake value never actually needs to connect to anything for an import check to pass). Triggers on `push`/`pull_request` to `main`.
+
+**Branch protection on `main`**: requires a PR (direct pushes blocked, including from an agent), requires the `frontend`/`backend` checks to pass, requires the branch be up to date with `main` before merge. **Does not** require a review approval — this is a solo-maintainer repo and GitHub doesn't allow self-approval, so that setting would create a permanent deadlock if enabled.
+
+**Workflow in practice**: every change, including trivial ones, goes through `git checkout -b <branch>` → commit → push → open PR on GitHub → wait for CI → merge → delete branch (both local and remote) → pull `main` locally. This is now the established, consistent pattern for this repo — don't push directly to `main` even if it were technically possible.
+
+### Railway-specific gotchas (all hit and fixed in production, worth knowing before touching the Railway config):
+- **`DB_URL` must be hand-composed**, not pasted from Railway's Postgres plugin's own `DATABASE_URL` variable (that one's plain `postgres://`, wrong scheme). Use: `postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}` as a Railway variable reference.
+- **`REDIS_URL`** can be referenced directly: `${{Redis.REDIS_URL}}`.
+- **The backend service's public domain has its own separate "target port" setting**, which does *not* automatically track whatever `$PORT` the app actually binds to at runtime — these can mismatch (app listening on 8080, domain routing to a stale default of 8000) and produce a `502 Application failed to respond` even though the app itself is healthy and logging normally. Check this field explicitly if a freshly-generated domain 502s.
+- **Backend start command** runs migrations first: `python -m alembic upgrade head && python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`. **Poller start command** is just `python -m poller.poller` — no migrations, no public networking needed (it's a pure background worker, don't generate a domain for it).
+- Both services' **root directory must stay the repo root**, not `backend/`/`poller/` — the app's absolute imports (`backend.app.main`, `poller.poller`) need repo root on `sys.path`, matching how everything is already invoked locally. There's no installable package structure (no `pyproject.toml`).
+- `requirements.txt` (repo root) is the single dependency manifest for both Railway services — see §2/§6 for the `psycopg2-binary` gotcha specifically.
+
+### Vercel-specific notes:
+- **Root directory must be set to `frontend`** (monorepo — the Next.js app isn't at repo root).
+- `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` must be set in Vercel's project env vars *before* the first deploy (build-time baking, see §5). Use `wss://` not `ws://` for the WS URL — Railway serves the backend over HTTPS.
+
+---
+
+## 12. Change Detection (poller, in-memory)
+
+`LIVE_MATCHES_STORE: dict[int, tuple]` at module level in `poller.py`, compared via `matches_changed()` against a `(status, home_score, away_score, current_minute)` tuple per fixture. In-memory, not Redis, not a Postgres pre-read — deliberate: the poller is a singleton so this is always the same process reading/writing it; a restart just causes one harmless over-publish burst (every live match "looks new" once), Postgres is unaffected since it's written unconditionally every cycle regardless of this check. This is also what lets `poll_live_fixtures` detect a *transition* to `"finished"` (comparing the previous stored status before the snapshot gets overwritten) to trigger `poll_stages_then_stats`.
+
+---
+
+## 13. Notable Bugs Hit and Fixed This Build-Out (don't reintroduce)
 
 | Bug | Cause | Fix |
 |---|---|---|
-| `Settings()` `ValidationError: field required` | `.env` key name didn't exactly match the Pydantic field name (e.g. `DB_URL` vs `database_url`, `BZZORIO_API_KEY` missing entirely) | Pydantic-settings matches names case-insensitively but NOT if the name itself differs. Always verify exact match. |
-| Docker Compose vars "defaulting to blank string" | `.env` not found relative to where `docker compose` was invoked, or `.env` key name (`POSTGRES_PASS`) didn't match what `docker-compose.yml` referenced (`${POSTGRES_PASSWORD}`) | Ensure `.env` sits next to `docker-compose.yml`; keep key names identical between both files. |
-| `alembic: command not found` (Windows) | `pip`-installed console scripts not on PATH | Use `python -m alembic ...` instead of bare `alembic`. |
-| Alembic `ArgumentError: Could not parse SQLAlchemy URL` | `config.set_main_option(...)` either missing from `env.py` or placed after the functions that need it | Must be set at module top-level in `env.py`, before `run_migrations_online`/`offline` definitions. |
-| Alembic `ModuleNotFoundError: psycopg2` | Alembic runs sync migrations; app uses async `asyncpg` driver only | Install `psycopg2-binary` as a separate dependency purely for migrations. |
-| `ConnectionRefusedError` on `localhost:5432` | Postgres container not running / port conflict with a native Windows Postgres install | Check `docker compose ps`; check `netstat -ano \| findstr :5432` for a port collision. |
-| `can't subtract offset-naive and offset-aware datetimes` (asyncpg) | Column defined as `DateTime` (naive) while normalize function produced a tz-aware `datetime` (via `.fromisoformat()` on a `Z`-suffixed ISO string) | Column must be `DateTime(timezone=True)` to match the tz-aware Python values actually being sent. Required a new Alembic migration. |
-| `default=datetime.now(timezone.utc)` silently frozen at class-definition time | Called the function immediately instead of passing a callable | Must be `default=lambda: datetime.now(timezone.utc)`. |
-| `'LiveFixture' object has no attribute 'model_dump'` | Called Pydantic's `.model_dump()` on an object that was actually the SQLAlchemy ORM return value from `upsert_*` | Use `orm_to_dict()` (custom helper) for anything returned by `upsert_*`/`select()`; `.model_dump()` only ever applies to the Pydantic object immediately after a `fetch_*` call. |
-| Silent wrong-binding risk from duplicate class names | A Pydantic schema and a SQLAlchemy ORM model were both named `LiveFixture` and both imported into the same file | Never give a Pydantic fetch-schema and an ORM model the same class name if both might be imported together. |
-| APScheduler: "maximum number of running instances reached (1)" | `poll_live_fixtures` (5s interval) took longer than 5s per run because per-league fetches ran sequentially | Fetch leagues concurrently via `asyncio.gather(return_exceptions=True)`; also bumped interval toward the provider's actual refresh cadence (~15s) since sub-15s polling returns mostly-identical data anyway. |
-| Poller process exiting immediately after `scheduler.start()` | `scheduler.start()` is non-blocking; nothing kept the event loop alive afterward | Wrap in `async def main()` ending with `await asyncio.Event().wait()`, run via `asyncio.run(main())`. |
-| Feedparser missing BBC's `<media:thumbnail>` despite `bozo=False` (feed parsed cleanly) | `feedparser`'s namespace handling didn't surface this tag for this specific feed, for reasons not fully diagnosed | Fell back to `xml.etree.ElementTree` with explicit namespace dict (`{"media": "http://search.yahoo.com/mrss/"}`) matched to the feed's actual declared URI — confirmed working. |
-| `fetch_stat` returning `None` always | Function body had `print(stats)` instead of `return stats` | One-line fix — flagged, not yet confirmed corrected in the actual file. |
+| Backend 500 on any unseeded/typo'd `league_id` | `standings.py`/`stats.py` called `get_current_stage(...).season_id` without checking for `None` | Explicit `if curr_season is None: return []` in both routes. |
+| Backend 500 on bad `league_id`/date input | `matches.py` manually did `int(league_id)`/`datetime.fromisoformat(date)` in the route body, no try/except | Routes now type path params directly (`league_id: int`, `date: date`) — FastAPI validates and returns a clean 422 automatically. |
+| Poller's Redis publishes silently went nowhere in production | `redis_client` was a hardcoded sync `redis.Redis(host="localhost", ...)`, ignoring `settings.redis_url` entirely — worked locally by coincidence (Redis genuinely was on localhost there) | Switched to `redis.asyncio.from_url(settings.redis_url)`, matching `redis_listener.py`'s existing correct pattern. |
+| `poll_standings`/`poll_stat` threw `Exception("Season id not found")` on a fresh/empty database | Fired as independent concurrent tasks alongside `poll_stages`, racing it — invisible on any DB that already had stage data (every local dev DB by the time this was tested), deterministic failure on a genuinely empty one | New `poll_stages_then_stats()` wrapper `await`s `poll_stages()` to completion before firing the other two. |
+| `upsert_standings(db, standing)`/`upsert_stat(db, stat)` crashed with a `TypeError` | Called once per individual item after a refactor, but both functions take `list[dict]` and loop internally — passing a single dict made `for pos in standings` iterate the dict's *keys* (strings), then `**pos` tried to unpack a string | Call once with the full flattened list, not once per item. |
+| Production backend container crashed on every boot: `ModuleNotFoundError: No module named 'psycopg2'` | Alembic's `env.py` deliberately uses the sync driver for migrations (see §6); `psycopg2-binary` was never in `requirements.txt` since nothing imports it by literal name — it's resolved dynamically by SQLAlchemy from the bare `postgresql://` URL scheme, invisible to a text grep | Added `psycopg2-binary` to `requirements.txt`. |
+| Production backend 502'd ("Application failed to respond") despite healthy logs | Railway's generated public domain had a separate, stale "target port" setting (8000) that didn't match what `$PORT` actually resolved to at runtime (8080) | Manually corrected the domain's target port in Railway's Networking settings. |
+| Poller 404'd on *every* bzzorio request in production, worked fine locally | `BZZORIO_BASE_URL` was set from `.env.example`'s stale value (bare domain, no `/api/v2/` prefix) rather than verified against the actual working local `.env` — wasted real time chasing a wrong "datacenter IP blocking" theory (region-switching and auth-header testing both correctly ruled out, since those genuinely weren't it) before the real cause was found | Corrected to `https://sports.bzzoiro.com/api/v2/` in both `.env.example` and the Railway env vars. |
+| Double-flicker navigating matchdays/dates in production (not reproducible locally) | `Panel`'s remount `key` was tied directly to `round`/`date`, which updates synchronously on click, before the new fetch resolves — remounted (and re-animated) the stale previous content immediately, then again when a skeleton kicked in after the (too-short, localhost-tuned) delay threshold | Decoupled the remount key into separate `displayKey` state that only updates once new data actually arrives; separately raised `SKELETON_DELAY_MS` from 150ms to 600ms to match real production latency (see §10). |
+| `.gitignore` had a bare `migrations/` entry | Matched `database/migrations/` too (unscoped), which would have silently excluded any *future* Alembic migration file from `git add -A` | Removed the line. |
 
 ---
 
-## 11. Implementation Status (as of this document)
+## 14. Known Limitations / Deliberately Deferred (not bugs — conscious scope cuts)
 
-**Built and confirmed working:**
-- `.env` / `config/settings.py` resolving correctly.
-- Docker Compose (Postgres + Redis) running with healthchecks.
-- Alembic migrations applying cleanly; `fixtures` table exists (consolidated schema).
-- `database/database.py`, `database/repository.py` (`upsert_fixture`, `orm_to_dict`) in place.
-- Poller: bzzoiro fetch functions for live fixtures (confirmed working — real match data observed flowing through, e.g. "Everton 0-1 Manchester United"), upcoming fixtures, standings, stat leaders.
-- APScheduler wired with all four job intervals; process-keep-alive pattern in place.
-- Concurrent per-league fetching via `asyncio.gather`.
-- Fixture consolidation (single table, nullable live-fields) — schema decided, migration approach discussed, **verify it's actually been applied**.
-
-**Designed but not yet implemented:**
-- Redis publish-on-change wiring in the poller (§9 — logic designed, needs confirmation it's in the actual file).
-- `status` field population from an explicit provider field (currently a gap — nothing sets it yet).
-- FastAPI app itself: no REST routes, no WebSocket hub, no `ConnectionManager`, no `lifespan`/`redis_listener` startup task exist yet as actual code — all designed in conversation only.
-- RSS ingestion pipeline: `NewsItem` schema, `FEEDS` registry, `IMAGE_EXTRACTORS` registry pattern — all designed with working BBC extraction logic confirmed, but not yet assembled into a running ingestion loop or wired to Postgres.
-- League config (`LEAGUES` dict with stable IDs) — developer has a working dataframe pulled from bzzoiro; needs to be turned into the actual static config file (`leagues.py`).
-- `TeamIDMapping` table / cross-provider entity resolution — designed pre-bzzoiro-pivot, needs revisiting since bzzoiro is currently the sole active source (no cross-provider merging happening yet in practice).
-- Next.js frontend — not started at all; fully designed only (ISR split, WebSocket client component, initial-state handling).
-- Deployment (Railway/Fly.io/Vercel), CI/CD (GitHub Actions), testing (pytest), monitoring (Sentry) — none started.
-- `.env.example`, finalized `.gitignore` — content specified in conversation, verify actually created in repo.
-- Historical seed import from openfootball — not started.
-- TheSportsDB integration for crests — not started.
+- **No tests** (pytest or otherwise), **no monitoring** (Sentry or otherwise), **no CI for the poller's actual runtime behavior** beyond an import-check.
+- **No mobile/responsive frontend support** at all.
+- **Frontend league list is hand-synced** against `config/leagues.py`, not fetched — see §3.
+- **`/ws/live`'s per-league filtering is unimplemented** — flat broadcast to all clients, see §4.
+- **No news/RSS feature** despite `feedparser` being installed and `config/news_feeds.py` existing — never wired up.
+- **No TheSportsDB/openfootball/StatsBomb integration** — all were early-design aspirations, bzzorio covers images directly instead, historical seed data and advanced analytics were never started.
+- **Standings zone data gaps and the `"unresolved"` fixture status** — genuine upstream data quirks, documented in §3, not fixable from this codebase.
+- **Dark mode CSS exists but has no activation toggle** — OS-preference-only.
 
 ---
 
-## 12. Immediate Next Steps (in dependency order)
+## 15. Suggested Next Steps (if picking this up fresh)
 
-1. Confirm `status` field is populated correctly from bzzoiro's raw response in `transform_fixture`.
-2. Confirm Redis publish-on-change (§9) is actually wired into `poll_live_fixtures`, not just designed.
-3. Build the FastAPI app: `lifespan` startup task (`redis_listener`), `ConnectionManager` (inverted-index design, §4), `/ws/live` endpoint, `/matches` REST endpoint using `repository.py` functions.
-4. Build `leagues.py` from the developer's bzzoiro dataframe (stable fields only; season ID resolved at runtime, not hardcoded).
-5. Finish RSS ingestion loop end-to-end (fetch → normalize → dedupe per-source image extractors → Postgres) and add it as its own APScheduler job.
-6. Scaffold the Next.js frontend against the now-real REST/WS endpoints.
-7. Revisit cross-provider entity resolution once/if a second live-data provider is reintroduced.
+1. If extending the league list, do it in **both** `config/leagues.py` and `frontend/components/sidebar/LeagueList.tsx`'s `PLACEHOLDER_LEAGUES` — or better, finally build the backend endpoint that would let the frontend fetch this dynamically and retire the drift risk for good.
+2. If adding tests, the backend/poller side (pure functions like `transform_*`, `matches_changed`) is the highest-value, lowest-effort starting point — no live DB/API needed for those.
+3. If mobile support becomes a priority, the shell (`DashboardShell`/`Sidebar`/`MainView`) needs real breakpoint handling from scratch — nothing partial exists to build on.
+4. Any new Railway service from this repo needs its root directory left at repo root and its start command set explicitly — Railway's auto-detection has no way to guess a multi-service monorepo's correct entry point.
 
 ---
 
-*This document should be updated as the project progresses — it reflects a snapshot of decisions and status, not a static spec.*
+*This document reflects a snapshot as of 2026-10-01, right after the MVP hardening pass and first production deployment. Keep it updated as the project evolves — a stale version of this file is actively misleading, not just unhelpful.*
