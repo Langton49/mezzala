@@ -5,7 +5,11 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 // How long a path-change fetch can be pending before we actually show the
 // skeleton over already-rendered data. Below this it just reads as instant.
-const SKELETON_DELAY_MS = 150;
+// Tuned against production, not localhost — the backend round-trip (Vercel
+// frontend to Railway backend) typically runs 280-525ms, so anything near
+// the old 150ms threshold meant nearly every navigation showed a skeleton
+// for a perfectly normal request, not a genuinely slow one.
+const SKELETON_DELAY_MS = 600;
 
 // Every fetch-driven view in this app (matchday, by-date, standings, stat
 // cards) hand-rolled the same useEffect + fetch + loading/error state five
