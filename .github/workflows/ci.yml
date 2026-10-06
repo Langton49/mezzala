@@ -32,14 +32,14 @@ jobs:
       DB_URL: postgresql+asyncpg://fake:fake@localhost:5432/fake
       REDIS_URL: redis://localhost:6379
       POSTGRES_USER: fake
-      POSTGRES_PASSWORD: fake
+      POSTGRES_PASS: fake
       POSTGRES_DB: fake
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: fake
-          POSTGRES_PASS: fake
+          POSTGRES_PASSWORD: fake
           POSTGRES_DB: mezzala_test
         ports:
           - 5432:5432
