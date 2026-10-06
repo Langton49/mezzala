@@ -56,7 +56,8 @@ Competitions are defined in `config/leagues.py`, which is the single source of t
 - **Frontend:** Next.js 16 (App Router) and React 19 in TypeScript.
 - **Styling:** Tailwind CSS v4.
 - **Local infrastructure:** Docker Compose, running Postgres and Redis.
-- **CI:** GitHub Actions — type-check, lint and build the frontend; install and import-check the backend.
+- **CI:** GitHub Actions — type-check, lint and build the frontend; import-check the backend and run its test suite against a Postgres service container.
+- **Testing:** pytest with pytest-asyncio, against a real Postgres database.
 - **Hosting:** Vercel for the frontend, Railway for the backend, poller, Postgres and Redis.
 
 ---
@@ -186,6 +187,28 @@ The root `npm install` pulls in `concurrently`, which `npm run dev` uses to run 
 
 On first run the poller backfills the current season before settling into its normal schedule, so an empty database takes a moment to fill.
 
+### Running Tests
+
+Tests run against a throwaway `mezzala_test` database on the Compose Postgres, rebuilt from scratch for every test.
+
+**1. Create the test database** (once)
+
+```bash
+docker exec mezzala_postgres psql -U mezzala -d postgres -c "CREATE DATABASE mezzala_test"
+```
+
+**2. Install test dependencies**
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+**3. Run the suite**
+
+```bash
+python -m pytest
+```
+
 ---
 
 ## Repository Structure
@@ -212,6 +235,9 @@ On first run the poller backfills the current season before settling into its no
 ├── config/
 │   ├── settings.py                 # Settings model; every variable required
 │   └── leagues.py                  # The 16 tracked competitions
+├── tests/
+│   ├── conftest.py                 # Session fixture against a fresh test schema
+│   └── test_fixture_ordering.py    # Ordering guarantees for fixture queries
 ├── frontend/
 │   ├── app/                        # App Router entry point and global styles
 │   ├── components/
@@ -227,7 +253,9 @@ On first run the poller backfills the current season before settling into its no
 │   └── lib/                        # Image URL builder and shared types
 ├── docker-compose.yml              # Local Postgres and Redis
 ├── requirements.txt                # Backend and poller dependencies
+├── requirements-dev.txt            # Test-only dependencies
 ├── package.json                    # Dev orchestration for all three processes
+├── pytest.ini                      # Test discovery and async configuration
 └── alembic.ini
 ```
 
@@ -327,7 +355,7 @@ Connecting to `/ws/live` opens a stream of fixture records, one message per fixt
 | Postgres | Railway | Managed. |
 | Redis | Railway | Managed. |
 
-Both platforms deploy from their own GitHub integration on merge to `main`. GitHub Actions runs on every push and pull request (type-check, lint and build for the frontend, install and import-check for the backend) and gates merges rather than triggering deploys.
+Both platforms deploy from their own GitHub integration on merge to `main`. GitHub Actions runs on every push and pull request (type-check, lint and build for the frontend; import-check and the test suite for the backend) and gates merges rather than triggering deploys.
 
 ---
 
@@ -341,7 +369,7 @@ Fixtures, standings, stat leaders, competition metadata and club crests all come
 
 Known gaps, all deliberate scope cuts rather than oversights:
 
-- No automated test suite. The pure transform functions in `database/repository.py` are the obvious first target, since they need neither a database nor the network.
+- Test coverage is limited to fixture query ordering. The pure transform functions in `database/repository.py` are the obvious next target, since they need neither a database nor the network.
 - Desktop only — the layout has no responsive breakpoints.
 - Dark mode follows the operating system and has no in-app toggle.
 - `/ws/live` broadcasts every update to every client; per-competition filtering is unimplemented.
