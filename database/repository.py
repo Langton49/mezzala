@@ -243,7 +243,7 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
     """
     result = await db.execute(select(Fixture)
                               .where(Fixture.status == 'inprogress')
-                              .order_by(Fixture.event_date.asc(), Fixture.league_id.asc()))
+                              .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
 async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
