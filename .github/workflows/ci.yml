@@ -32,7 +32,7 @@ jobs:
       DB_URL: postgresql+asyncpg://fake:fake@localhost:5432/fake
       REDIS_URL: redis://localhost:6379
       POSTGRES_USER: fake
-      POSTGRES_PASS: fake
+      POSTGRES_PASSWORD: fake
       POSTGRES_DB: fake
     services:
       postgres:
