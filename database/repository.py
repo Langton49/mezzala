@@ -2,7 +2,6 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from .tables import Fixture, CompetitionStages, Standing, PlayerStat
-from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
 # HELPERS
@@ -242,7 +241,9 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
     Returns:
         list[Fixtures]: List of all live fixtures
     """
-    result = await db.execute(select(Fixture).where(Fixture.status == 'inprogress'))
+    result = await db.execute(select(Fixture)
+                              .where(Fixture.status == 'inprogress')
+                              .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
 async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
@@ -261,7 +262,7 @@ async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> 
         .where(Fixture.league_id == league_id)
         .where(Fixture.round_number == round)
         .where(Fixture.event_date >= current_season_start())
-        .order_by(Fixture.event_date.asc())
+        .order_by(Fixture.event_date.asc(), Fixture.id.asc())
     )
     return result.scalars().all()
 
@@ -282,7 +283,7 @@ async def get_matches_by_id_date(db: AsyncSession, league_id: int, date: datetim
                               .where(Fixture.league_id == league_id)
                               .where(Fixture.event_date >= day_start)
                               .where(Fixture.event_date < day_end)
-                              .order_by(Fixture.event_date.asc()))
+                              .order_by(Fixture.event_date.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
 async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]:
@@ -299,7 +300,8 @@ async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]
     day_end = day_start + timedelta(days=1)
     result = await db.execute(select(Fixture)
                             .where(Fixture.event_date >= day_start)
-                            .where(Fixture.event_date < day_end))
+                            .where(Fixture.event_date < day_end)
+                            .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()    
             
 async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> list[Standing]:

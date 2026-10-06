@@ -34,6 +34,20 @@ jobs:
       POSTGRES_USER: fake
       POSTGRES_PASS: fake
       POSTGRES_DB: fake
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fake
+          POSTGRES_PASSWORD: fake
+          POSTGRES_DB: mezzala_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,5 +55,7 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: pip install -r requirements.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest
       - run: python -c "import backend.app.main"
       - run: python -c "import poller.poller"
