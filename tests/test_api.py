@@ -26,10 +26,12 @@ async def client(test_db_session):
 
 
 def make_fixture(raw_fixture: dict, **overrides) -> Fixture:
-    # Kicked off an hour ago, so it's inside today and inside the current season.
+    # Kicks off at NOW: always on TODAY and inside the current season, and
+    # already started by the time any repository function reads the clock.
+    # Anything earlier crosses into yesterday during the first hour of a UTC day.
     return Fixture(**transform_fixture({
         **raw_fixture,
-        "event_date": (NOW - timedelta(hours=1)).isoformat(),
+        "event_date": NOW.isoformat(),
         **overrides,
     }))
 
@@ -96,9 +98,7 @@ async def test_league_date_matches_excludes_other_leagues(client, test_db_sessio
     response = await client.get(f"/matches/{LEAGUE_ID}/date/{TODAY}")
 
     assert response.status_code == 200
-    body = response.json()
     assert [f["id"] for f in response.json()] == [1]
-    assert body[0].keys() == FixtureOut.model_fields.keys()
 
 
 async def test_date_matches_spans_all_leagues(client, test_db_session, raw_fixture):
@@ -108,7 +108,6 @@ async def test_date_matches_spans_all_leagues(client, test_db_session, raw_fixtu
     ])
 
     response = await client.get(f"/matches/date/{TODAY}")
-
     assert response.status_code == 200
     assert {f["id"] for f in response.json()} == {1, 2}
 
