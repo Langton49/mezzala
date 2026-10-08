@@ -125,6 +125,7 @@ async def get_current_stage(db: AsyncSession, league_id: int) -> CompetitionStag
         .where(CompetitionStages.league_id == league_id)
         .where(CompetitionStages.start_date <= now)
         .where(CompetitionStages.end_date >= now)
+        .order_by(CompetitionStages.start_date.asc(), CompetitionStages.id.asc())
     )
     stage = res.scalars().first()
     if stage:
@@ -136,7 +137,7 @@ async def get_current_stage(db: AsyncSession, league_id: int) -> CompetitionStag
         select(CompetitionStages)
         .where(CompetitionStages.league_id == league_id)
         .where(CompetitionStages.start_date > now)
-        .order_by(CompetitionStages.start_date.asc())
+        .order_by(CompetitionStages.start_date.asc(), CompetitionStages.id.asc())
     )
     stage = res.scalars().first()
     if stage:

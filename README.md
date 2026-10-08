@@ -236,8 +236,13 @@ python -m pytest
 │   ├── settings.py                 # Settings model; every variable required
 │   └── leagues.py                  # The 16 tracked competitions
 ├── tests/
-│   ├── conftest.py                 # Session fixture against a fresh test schema
-│   └── test_fixture_ordering.py    # Ordering guarantees for fixture queries
+│   ├── conftest.py                 # Shared fixtures: test DB session, raw bzzorio fixture
+│   ├── test_api.py                 # REST endpoints: responses, empty cases, 422s
+│   ├── test_current_stage.py       # Stage resolution and its fallbacks
+│   ├── test_fixture_ordering.py    # Ordering guarantees for fixture queries
+│   ├── test_matches_changed.py     # Live-update change detection
+│   ├── test_transforms.py          # Raw API payloads to table rows
+│   └── test_upserts.py             # Conflict handling on every upsert
 ├── frontend/
 │   ├── app/                        # App Router entry point and global styles
 │   ├── components/
@@ -369,7 +374,7 @@ Fixtures, standings, stat leaders, competition metadata and club crests all come
 
 Known gaps, all deliberate scope cuts rather than oversights:
 
-- Test coverage is limited to fixture query ordering. The pure transform functions in `database/repository.py` are the obvious next target, since they need neither a database nor the network.
+- Backend test coverage is partial. The poller's scheduling, the WebSocket route and several repository helpers are untested; each gap is tracked as a GitHub issue (#22–#29).
 - Desktop only — the layout has no responsive breakpoints.
 - Dark mode follows the operating system and has no in-app toggle.
 - `/ws/live` broadcasts every update to every client; per-competition filtering is unimplemented.
