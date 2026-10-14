@@ -81,12 +81,27 @@ async def test_health_check(client):
 async def test_round_matches_returns_fixture_shape(client, test_db_session, raw_fixture):
     await seed(test_db_session, [make_fixture(raw_fixture)])
 
-    response = await client.get(f"/matches/{LEAGUE_ID}/round/{raw_fixture['round_number']}")
+    response = await client.get(f"/matches/{LEAGUE_ID}/stage/{raw_fixture['stage']}/round/{raw_fixture['round_number']}")
 
     assert response.status_code == 200
     body = response.json()
     assert [f["id"] for f in body] == [raw_fixture["id"]]
     assert body[0].keys() == FixtureOut.model_fields.keys()
+
+async def test_round_is_scoped_to_its_stage(client, test_db_session, raw_fixture):
+    # Same round_number in two stages, as UEFA qualifiers and league phase do.
+    await seed(test_db_session, [
+        make_fixture(raw_fixture, id=1, stage="league-phase"),
+        make_fixture(raw_fixture, id=2, stage="qualification-round-2"),
+    ])
+    round_number = raw_fixture["round_number"]
+
+    league_phase = await client.get(f"/matches/{LEAGUE_ID}/stage/league-phase/round/{round_number}")
+    qualifiers = await client.get(f"/matches/{LEAGUE_ID}/stage/qualification-round-2/round/{round_number}")
+
+    assert league_phase.status_code == 200
+    assert [f["id"] for f in league_phase.json()] == [1]
+    assert [f["id"] for f in qualifiers.json()] == [2]
 
 
 async def test_league_date_matches_excludes_other_leagues(client, test_db_session, raw_fixture):
@@ -176,8 +191,8 @@ async def test_stats_filtered_by_type_and_ordered_by_rank(client, test_db_sessio
 
 
 @pytest.mark.parametrize("path", [
-    "/matches/abc/round/7",
-    "/matches/1/round/abc",
+    "/matches/abc/stage/6/round/7",
+    "/matches/1/stage/7/round/abc",
     "/matches/abc/date/2026-10-04",
     "/matches/1/date/not-a-date",
     "/matches/date/2026-13-45",

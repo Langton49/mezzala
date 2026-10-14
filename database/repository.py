@@ -226,12 +226,13 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
                               .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
-async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
+async def get_matches_by_round(db: AsyncSession, league_id: int, stage: str, round: int) -> list[Fixture]:
     """Get league matches by round/matchday
 
     Args:
         db (AsyncSession): Db connection
         league_id (int): Competition id
+        stage: Competition stage
         round (int): Competition round
 
     Returns:
@@ -241,6 +242,7 @@ async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> 
         select(Fixture)
         .where(Fixture.league_id == league_id)
         .where(Fixture.round_number == round)
+        .where(Fixture.stage == stage)
         .where(Fixture.event_date >= current_season_start())
         .order_by(Fixture.event_date.asc(), Fixture.id.asc())
     )
