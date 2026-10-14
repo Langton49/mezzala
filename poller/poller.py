@@ -225,34 +225,6 @@ async def seed_league_fixtures(league_id: int):
     except (KeyError, TypeError) as e:
         print(f"Unexpected Error")
 
-async def backfill_fixtures(league_id: int, date_from: str, date_to: str):
-    try:
-        response = await client.get("events/", params={
-            "league_id": league_id, "date_from": date_from, "date_to": date_to, "limit": 100,
-        })
-        fixtures = []
-        while True:
-            response.raise_for_status()
-            body = response.json()
-            fixtures += [transform_fixture(fx) for fx in body["results"]]
-            if not body.get("next"):
-                break
-            response = await client.get(body["next"])
-
-        async with async_session() as db:
-            await upsert_fixtures(db, fixtures)
-        print(f"Backfilled {len(fixtures)} fixtures for league {league_id}")
-    except httpx.HTTPError as e:
-        print(f"Backfill failed for league {league_id}: {e}")
-
-
-async def backfill_damaged_fixtures():
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    for details in LEAGUES.values():
-        await backfill_fixtures(details["bzzorio_id"], "2026-10-01", today)
-    print("Backfill complete")
-
-
 async def poll_seed_missing_seasons():
     """Backfills the full current season for any league that has nothing in
     the DB yet — a fresh DB, a new season, or a league just added to LEAGUES —
@@ -397,7 +369,6 @@ async def main():
 
     asyncio.create_task(poll_seed_missing_seasons())
     asyncio.create_task(poll_stages_then_stats())
-    asyncio.create_task(backfill_damaged_fixtures()) 
 
     print("POLLER UP")
     try:
