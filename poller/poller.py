@@ -3,7 +3,7 @@ import redis.asyncio as redis
 import json
 from config.settings import settings
 from config.leagues import LEAGUES
-from database.repository import upsert_fixtures, upsert_stat, transform_stat, transform_fixture, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season
+from database.repository import upsert_fixtures, upsert_team, upsert_stat, transform_stat, transform_fixture, transform_team, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season, get_missing_teams
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -360,11 +360,36 @@ async def poll_stages_then_stats(league_id: int | None = None):
     await poll_stages(league_id)
     asyncio.create_task(poll_standings(league_id))
     asyncio.create_task(poll_stat(league_id))
+    
+async def fetch_teams() -> list[dict]:
+    async with async_session() as db:
+        teams = await get_missing_teams(db)
+    res = []
+    for team, is_national in teams:
+        try:
+            team_req = await client.get(f"teams/{team}/")
+            team_req.raise_for_status()
+            res.append(transform_team(team_req.json(), is_national))
+        except httpx.HTTPStatusError as e:
+            print(f"Team {team}: API returned HTTP {e.response.status_code}")
+        except httpx.RequestError as e:
+            print(f"Team {team}: request failed: {e}")
+        except (KeyError, TypeError) as e:
+            print(f"Team {team}: unexpected payload: {e!r}")
+    return res
+    
+async def poll_teams():
+    print("Starting poll for teams")
+    teams = await fetch_teams()
+    async with async_session() as db:
+        await upsert_team(db, teams)
+    print("Teams poll complete")
 
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=30, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
+    scheduler.add_job(poll_teams, "interval", days=7, id="teams", next_run_time=datetime.now())
     scheduler.start()
 
     asyncio.create_task(poll_seed_missing_seasons())

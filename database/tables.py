@@ -136,7 +136,6 @@ class Team(Base):
     __tablename__ = "teams"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    current_league: Mapped[int | None] = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String)
     short_name: Mapped[str | None] = mapped_column(String, nullable=True)
     country: Mapped[str | None] = mapped_column(String, nullable=True)
