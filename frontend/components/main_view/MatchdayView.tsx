@@ -61,10 +61,18 @@ export function MatchdayView({ leagueId }: { leagueId: number | null }) {
     setUrlParam("round", next !== null ? String(next) : null);
   }
 
+  // Round numbers repeat across stages (a UEFA qualifying round 2 and league-
+  // phase matchday 2 are both round 2), so a round is only unique within its
+  // stage. Waits for /current to supply one; an unseeded league has none and
+  // falls through to the empty state.
+  const stage = current?.stage ?? null;
+
   // Polled — a round can contain a live match, and its current_minute only
   // updates in the DB, this re-fetch is what carries that onto the screen.
   const { data: matches, loading, error } = useJsonFetch<Fixture[]>(
-    isSelectable && round !== null ? `/matches/${leagueId}/round/${round}` : null,
+    isSelectable && round !== null && stage !== null
+      ? `/matches/${leagueId}/stage/${encodeURIComponent(stage)}/round/${round}`
+      : null,
     20000
   );
   // Live-patched on top of the polled REST list — instant on a status/score

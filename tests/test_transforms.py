@@ -124,6 +124,13 @@ def test_transform_fixture(raw_fixture):
                      "status", "home_score", "away_score", "current_minute", "home_score_ht", "away_score_ht", "last_updated"])
     assert new_fixture.keys() == expected_keys
     
+def test_live_payload_does_not_null_out_round_data():
+    live = {"id": 1, "league_id": 7, "event_date": "2026-10-14T19:00:00Z",
+            "status": "inprogress", "home_score": 2, "away_score": 4}
+    out = transform_fixture(live)
+    assert "stage" not in out
+    assert "round_number" not in out
+
 def test_transform_stat():
     new_stat = transform_stat(RAW_STATS, league_id=2, curr_season=2034, stat_type="goals")
     expected_keys = set(["league_id", "season_id", "stat_type", "rank", "player_id", "player_name",

@@ -38,6 +38,8 @@ class Fixture(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     
+FIXTURE_COLS = {column.name for column in Fixture.__table__.columns}
+
 class CompetitionStages(Base):
     __tablename__ = "comp_stages"
     __table_args__ = (

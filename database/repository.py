@@ -1,40 +1,19 @@
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, CompetitionStages, Standing, PlayerStat
+from .tables import Fixture, CompetitionStages, Standing, PlayerStat, FIXTURE_COLS
+from sqlalchemy import inspect
 from datetime import datetime, timezone, timedelta
 
 # HELPERS
 def transform_fixture(dictionary: dict) -> dict:
+    res = {k: v for k, v in dictionary.items() if k in FIXTURE_COLS}
+    if "event_date" in res:
+        res["event_date"] = datetime.fromisoformat(res["event_date"])
     last_updated = dictionary.get("last_updated")
-    return {
-        "id": dictionary["id"],
-        "league_id": dictionary["league_id"],
-        "home_team_id": dictionary["home_team_id"],
-        "home_team": dictionary["home_team"],
-        "home_coach_id": dictionary.get("home_coach_id"),
-        "away_team_id": dictionary["away_team_id"],
-        "away_team": dictionary["away_team"],
-        "away_coach_id": dictionary.get("away_coach_id"),
-        "referee_id": dictionary.get("referee_id"),
-        "round_number": dictionary.get("round_number"),
-        "round_name": dictionary.get("round_name"),
-        "group_name": dictionary.get("group_name"),
-        "stage": dictionary.get("stage"),
-        "stage_name": dictionary.get("stage_name"),
-        "venue_id": dictionary.get("venue_id"),
-        "event_date": datetime.fromisoformat(dictionary["event_date"]),
-        "status": dictionary["status"],
-        "home_score": dictionary.get("home_score"),
-        "away_score": dictionary.get("away_score"),
-        "current_minute": dictionary.get("current_minute"),
-        "home_score_ht": dictionary.get("home_score_ht"),
-        "away_score_ht": dictionary.get("away_score_ht"),
-        # bzzorio never sends this field, only the poller's fabricated test_fixture_data does —
-        # treat it as optional and stamp our own ingestion time when it's missing.
-        "last_updated": datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
-    }
-
+    res["last_updated"] = datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
+    return res
+    
 def transform_stage(dictionary: dict, league_id: int, season_id: int, sort_order: int) -> dict:
     # league_id and sort_order aren't on the raw stage object at all — league_id comes
     # from whichever league's /season/ response we're processing, and sort_order is the
@@ -247,12 +226,13 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
                               .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
-async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
+async def get_matches_by_round(db: AsyncSession, league_id: int, stage: str, round: int) -> list[Fixture]:
     """Get league matches by round/matchday
 
     Args:
         db (AsyncSession): Db connection
         league_id (int): Competition id
+        stage: Competition stage
         round (int): Competition round
 
     Returns:
@@ -262,6 +242,7 @@ async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> 
         select(Fixture)
         .where(Fixture.league_id == league_id)
         .where(Fixture.round_number == round)
+        .where(Fixture.stage == stage)
         .where(Fixture.event_date >= current_season_start())
         .order_by(Fixture.event_date.asc(), Fixture.id.asc())
     )
