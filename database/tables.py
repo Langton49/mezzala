@@ -118,7 +118,7 @@ class Player(Base):
     preferred_foot: Mapped[str | None] = mapped_column(String, nullable=True)
     nationality: Mapped[str | None] = mapped_column(String, nullable=True)
     current_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
-    national_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
+    national_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     market_value_eur: Mapped[int | None] = mapped_column(Integer, nullable=True)
     contract_exp: Mapped[date | None] = mapped_column(Date, nullable=True)
     availability: Mapped[str | None] = mapped_column(String, nullable=True)

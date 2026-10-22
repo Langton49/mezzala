@@ -3,7 +3,7 @@ import redis.asyncio as redis
 import json
 from config.settings import settings
 from config.leagues import LEAGUES
-from database.repository import upsert_fixtures, upsert_team, upsert_stat, transform_stat, transform_fixture, transform_team, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season, get_missing_teams
+from database.repository import upsert_fixtures, upsert_team, upsert_stat, transform_stat, transform_fixture, transform_team, transform_standings, transform_stage, upsert_stages, get_current_stage, upsert_standings, current_season_start, has_fixtures_for_season, get_missing_teams, transform_player, get_all_team_id, upsert_players
 from database.database import async_session
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -384,12 +384,52 @@ async def poll_teams():
     async with async_session() as db:
         await upsert_team(db, teams)
     print("Teams poll complete")
+    
+async def fetch_team_squad(team_id: int, limit: asyncio.Semaphore) -> list[int]:
+    result = []
+    async with limit:
+        try:
+            squad = await client.get(f"players/", params={"team_id": team_id, "limit": 100})
+            squad.raise_for_status()
+            result += [transform_player(player) for player in squad.json().get('results', [])]
+        except httpx.HTTPStatusError as e:
+            print(f"API returned HTTP {e.response.status_code}")
+            return []
+        except httpx.RequestError as e:
+            print(f"Request failed: {e}")
+            return []
+        except (KeyError, TypeError) as e:
+            print(f"Team {team_id}: {e!r}")
+            return []
+    return result
+
+async def fetch_all_players() -> list[dict]:
+    async with async_session() as db:
+        team_ids = await get_all_team_id(db)
+        
+    limit = asyncio.Semaphore(10)
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(fetch_team_squad(t, limit)) for t in team_ids]
+    
+    by_id = {p["id"]: p for task in tasks for p in task.result()}   # a loaned player can appear twice
+    return list(by_id.values())
+
+async def poll_players():
+    print("Starting player poll")
+    players = await fetch_all_players()
+    async with async_session() as db:
+        await upsert_players(db, players)
+    print("Player poll finished")
+    
+async def poll_teams_then_players():
+    await poll_teams()
+    await poll_players()
 
 async def main():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(poll_live_fixtures, "interval", seconds=30, id="live_fixtures")
     scheduler.add_job(poll_upcoming_matches, "interval", days=1, id="upcoming_matches", next_run_time=datetime.now())
-    scheduler.add_job(poll_teams, "interval", days=7, id="teams", next_run_time=datetime.now())
+    scheduler.add_job(poll_teams_then_players, "interval", days=1, id="teams_and_players", next_run_time=datetime.now())
     scheduler.start()
 
     asyncio.create_task(poll_seed_missing_seasons())
