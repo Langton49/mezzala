@@ -1,0 +1,22 @@
+name: API payment reminder
+
+on:
+  schedule:
+    - cron: "0 9 15 * *"   # 09:00 UTC on the 15th of every month
+  workflow_dispatch:        # adds a "Run workflow" button so you can test it
+
+permissions:
+  issues: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Renew bzzorio Football Unlimited ($(date +'%B %Y'))" \
+            --body "Monthly reminder: renew the bzzorio plan. If it lapses, the poller drops to the free 7,500 requests/day quota and live scores stop mid-evening." \
+            --assignee Langton49
+        env:
+          GH_TOKEN: ${{ github.token }}

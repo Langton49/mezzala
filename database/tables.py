@@ -1,6 +1,6 @@
-from sqlalchemy import String, Integer, DateTime, UniqueConstraint, Float
+from sqlalchemy import String, Integer, DateTime, UniqueConstraint, Float, Date, ForeignKey, Boolean
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 class Base(DeclarativeBase):
     pass
@@ -38,6 +38,8 @@ class Fixture(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     
+FIXTURE_COLS = {column.name for column in Fixture.__table__.columns}
+
 class CompetitionStages(Base):
     __tablename__ = "comp_stages"
     __table_args__ = (
@@ -102,3 +104,51 @@ class PlayerStat(Base):
     team_name: Mapped[str] = mapped_column(String)
     value: Mapped[int] = mapped_column(Integer)
     matches: Mapped[int] = mapped_column(Integer)
+    
+class Player(Base):
+    __tablename__ = "players"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    position: Mapped[str] = mapped_column(String, nullable=True)
+    role: Mapped[str] = mapped_column(String, nullable=True)
+    number: Mapped[int  | None] = mapped_column(Integer, nullable=True) # Player may be a free agent
+    dob: Mapped[date | None] = mapped_column(Date, nullable=True)
+    height_cm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    preferred_foot: Mapped[str | None] = mapped_column(String, nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
+    national_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_value_eur: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contract_exp: Mapped[date | None] = mapped_column(Date, nullable=True)
+    availability: Mapped[str | None] = mapped_column(String, nullable=True)
+    injury_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    injury_return: Mapped[date | None] = mapped_column(Date, nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    annual_wages_eur: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_updated: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True),
+            default=lambda: datetime.now(timezone.utc),
+            onupdate=lambda: datetime.now(timezone.utc),
+        )
+       
+class Team(Base):
+    __tablename__ = "teams"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    short_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    country: Mapped[str | None] = mapped_column(String, nullable=True)
+    venue_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_national: Mapped[bool] = mapped_column(Boolean, default=False)
+
+class News(Base):
+    __tablename__ = "news"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    headline: Mapped[str] = mapped_column(String)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    details: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str] = mapped_column(String)
+    url: Mapped[str] = mapped_column(String, unique=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)) 

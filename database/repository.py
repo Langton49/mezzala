@@ -1,40 +1,18 @@
-from sqlalchemy import select
+from sqlalchemy import select, union, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from .tables import Fixture, CompetitionStages, Standing, PlayerStat
-from datetime import datetime, timezone, timedelta
+from .tables import Fixture, CompetitionStages, Standing, PlayerStat, Team, Player, FIXTURE_COLS
+from datetime import datetime, timezone, timedelta, date
 
 # HELPERS
 def transform_fixture(dictionary: dict) -> dict:
+    res = {k: v for k, v in dictionary.items() if k in FIXTURE_COLS}
+    if "event_date" in res:
+        res["event_date"] = datetime.fromisoformat(res["event_date"])
     last_updated = dictionary.get("last_updated")
-    return {
-        "id": dictionary["id"],
-        "league_id": dictionary["league_id"],
-        "home_team_id": dictionary["home_team_id"],
-        "home_team": dictionary["home_team"],
-        "home_coach_id": dictionary.get("home_coach_id"),
-        "away_team_id": dictionary["away_team_id"],
-        "away_team": dictionary["away_team"],
-        "away_coach_id": dictionary.get("away_coach_id"),
-        "referee_id": dictionary.get("referee_id"),
-        "round_number": dictionary.get("round_number"),
-        "round_name": dictionary.get("round_name"),
-        "group_name": dictionary.get("group_name"),
-        "stage": dictionary.get("stage"),
-        "stage_name": dictionary.get("stage_name"),
-        "venue_id": dictionary.get("venue_id"),
-        "event_date": datetime.fromisoformat(dictionary["event_date"]),
-        "status": dictionary["status"],
-        "home_score": dictionary.get("home_score"),
-        "away_score": dictionary.get("away_score"),
-        "current_minute": dictionary.get("current_minute"),
-        "home_score_ht": dictionary.get("home_score_ht"),
-        "away_score_ht": dictionary.get("away_score_ht"),
-        # bzzorio never sends this field, only the poller's fabricated test_fixture_data does —
-        # treat it as optional and stamp our own ingestion time when it's missing.
-        "last_updated": datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
-    }
-
+    res["last_updated"] = datetime.fromisoformat(last_updated) if last_updated else datetime.now(timezone.utc)
+    return res
+    
 def transform_stage(dictionary: dict, league_id: int, season_id: int, sort_order: int) -> dict:
     # league_id and sort_order aren't on the raw stage object at all — league_id comes
     # from whichever league's /season/ response we're processing, and sort_order is the
@@ -95,6 +73,38 @@ def transform_standings(standings: list[dict], league_id: int, curr_season: int)
             'zone_type': zone['type'] if zone else None,
         })
     return result
+
+def transform_team(team: dict, is_national: bool):
+    return {
+        'id': team['id'],
+        'name': team['name'],
+        'short_name': team.get('short_name') or None,
+        'country': team.get('country') or None,
+        'venue_id': team['venue_id'],
+        'is_national': is_national
+    }
+    
+def transform_player(player: dict):
+    return {
+        'id': player['id'],
+        'name': player['name'],
+        'position': player['position'],
+        'role': player['specific_position'],
+        'number': player['jersey_number'],
+        'dob': date.fromisoformat(player['date_of_birth']) if player['date_of_birth'] else None,
+        'height_cm': player['height_cm'],
+        'preferred_foot': player['preferred_foot'],
+        'nationality': player['nationality'],
+        'current_team_id': (player.get('current_team') or {}).get('id', None),
+        'national_team_id': (player.get('national_team') or {}).get('id', None),
+        'market_value_eur': player['market_value_eur'],
+        'contract_exp': date.fromisoformat(player['contract_until']) if player['contract_until'] else None,
+        'availability': player['availability'],
+        'injury_type': player['injury_type'],
+        'injury_return': date.fromisoformat(player['injury_expected_return']) if player['injury_expected_return'] else None,
+        'rating': player['rating'],
+        'annual_wages_eur': player['wage_eur_annual']
+    }
  
 def current_season_start() -> datetime:
     """Beginning of the current football season (July 1). Football seasons span a
@@ -231,6 +241,26 @@ async def upsert_stat(db: AsyncSession, stats: list[dict]):
         )
         await db.execute(statement)
         await db.commit()
+        
+async def upsert_team(db: AsyncSession, teams: list[dict]):
+    for team in teams:
+        statement = insert(Team).values(**team)
+        statement = statement.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: val for col, val in team.items()}
+                )
+        await db.execute(statement)
+        await db.commit()
+        
+async def upsert_players(db: AsyncSession, players: list[dict]):
+    for player in players:
+        statement = insert(Player).values(**player)
+        statement = statement.on_conflict_do_update(
+            index_elements=['id'],
+            set_={col: val for col, val in player.items()}
+        )
+        await db.execute(statement)
+        await db.commit()
 
 # ENDPOINT FUNCTIONS
 async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
@@ -247,12 +277,13 @@ async def get_live_fixtures(db: AsyncSession) -> list[Fixture]:
                               .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()
 
-async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> list[Fixture]:
+async def get_matches_by_round(db: AsyncSession, league_id: int, stage: str, round: int) -> list[Fixture]:
     """Get league matches by round/matchday
 
     Args:
         db (AsyncSession): Db connection
         league_id (int): Competition id
+        stage: Competition stage
         round (int): Competition round
 
     Returns:
@@ -262,6 +293,7 @@ async def get_matches_by_round(db: AsyncSession, league_id: int, round: int) -> 
         select(Fixture)
         .where(Fixture.league_id == league_id)
         .where(Fixture.round_number == round)
+        .where(Fixture.stage == stage)
         .where(Fixture.event_date >= current_season_start())
         .order_by(Fixture.event_date.asc(), Fixture.id.asc())
     )
@@ -304,6 +336,23 @@ async def get_matches_by_date(db: AsyncSession, date: datetime) -> list[Fixture]
                             .where(Fixture.event_date < day_end)
                             .order_by(Fixture.event_date.asc(), Fixture.league_id.asc(), Fixture.id.asc()))
     return result.scalars().all()    
+
+async def get_missing_teams(db: AsyncSession) -> list[tuple[int, bool]]:
+    home = select(Fixture.home_team_id.label("team_id"), Fixture.league_id)
+    away = select(Fixture.away_team_id.label("team_id"), Fixture.league_id)
+    pairs = union(home, away).subquery()
+    
+    result = await db.execute(
+        select(pairs.c.team_id, func.bool_or(pairs.c.league_id == 64))
+        .where(pairs.c.team_id.not_in(select(Team.id)))
+        .group_by(pairs.c.team_id)
+    )
+    return result.all()
+
+async def get_all_team_id(db: AsyncSession):
+    statement = select(Team.id).where(Team.is_national == False)
+    result = await db.execute(statement)
+    return result.scalars().all()
             
 async def get_standings(db: AsyncSession, league_id: int, curr_season: int) -> list[Standing]:
     """Get current standings for a competition. Data source needs season id for current season's standings
